@@ -30,6 +30,9 @@ def test_im2col():
 
 
 def main():
+    #compile gpu kernels
+    maxpool_gpu.init()
+    im2col_gpu.init()
     #set up test data
     #image = (np.random.rand(1, 49, 49) - .5) * 2
     image = np.float32((np.random.rand(49, 49, 1) - .5) * 2)
@@ -70,7 +73,6 @@ def main():
     conv_max = maxout(conv, 2, 4)
     conv_max_r = conv_max.ravel()
     result = np.dot(weights, conv_max_r)
-    print result
     
     
     kernels = [kernels_0, kernels_1, kernels_2]
@@ -78,12 +80,14 @@ def main():
     max_sizes = [max_0, max_1, max_2]
     
     #perform parallel computation
+    st = time.time()
     output = gpu_computation(image, kernels, biases, max_sizes)
+    print "total gpu:", time.time()-st 
     out_max = from_serial(conv_max)
-    print out_max-output 
-    print out_max, output
-    print np.allclose(output, out_max, rtol=1e-04, atol=1e-07) 
-    print np.where(np.isclose(output, out_max)==False)
+    #print out_max-output 
+    #print out_max, output
+    #print np.allclose(output, out_max, rtol=1e-04, atol=1e-07) 
+    #print np.where(np.isclose(output, out_max)==False)
 
 def to_serial(array):
     """This method converts the numpy default row-major ordering into an ordering to match the way we are indexing on the gpu. In particular each 2D image slice is indexed in a row-major format (i,j). However, inconsistent with row major ordering we traverse each slice before changing to a new slice. If the array is 4d (kernels) then we traverse the 4th dimension (each 3d kernel last). Thus the indices change (fastest to slowest) in the order column, row, slice, stack"""
@@ -95,8 +99,6 @@ def to_serial(array):
 
 def from_serial(array):
     shape_list = [dim for dim in array.shape]
-    print shape_list
-    print shape_list[-2:], shape_list[-3::-1]
     shape_list = shape_list[-2:] + shape_list[-3::-1]
     return array.reshape(shape_list)
 
@@ -109,7 +111,6 @@ def comp_convolution(image, kernels, pad, stride):
 
     height_col = (height + 2 * pad - ksize) / stride + 1
     width_col = (width + 2 * pad - ksize) / stride + 1
-    print kernels.shape
     conv = np.zeros((kernels.shape[0], height_col, width_col))
 
     for ki in range(kernels.shape[0]):
@@ -162,8 +163,6 @@ def compute_sgemm(col, kernel, bias):
 
 def gpu_computation(image, kernels, biases, max_sizes):
     pad = 0; stride = 1; 
-    #print image, kernels[0], biases[0]
-    print image.shape, kernels[0].shape, biases[0].shape
     image_d = gpu.to_gpu(image)
     
     for (kernel, bias, max_size) in zip(kernels, biases, max_sizes):
@@ -174,17 +173,20 @@ def gpu_computation(image, kernels, biases, max_sizes):
         kchannels = kernel.shape[3]
         height_col = (image_d.shape[0] + 2 * pad - ksize) / stride + 1
         width_col = (image_d.shape[1] + 2 * pad - ksize) / stride + 1 
-        print kernel_d.shape, ksize, kchannels, image_d.shape 
         kernel_d = kernel_d.reshape(kchannels, ksize*ksize*image_d.shape[2])
-        #print image_d
+        
+        st = time.time()
         result = im2col_gpu.compute_im2col(image_d, np.int32(ksize), np.int32(pad), np.int32(stride))
-        print bias_d.shape, kernel_d.shape, result.shape
+        print "im2col took:", time.time()-st
         bias_d = bias_d.reshape(kernel_d.shape[0], result.shape[1])
-        print "bias shape", bias_d.shape
-
+        
+        st = time.time()
         compute_sgemm(result, kernel_d, bias_d)
+        print "sgemm took:", time.time()-st
         bias_d = bias_d.reshape(np.int32(height_col), np.int32(width_col), np.int32(kchannels))
+        st = time.time()
         image_d = maxpool_gpu.compute_max(bias_d, np.int32(max_size)) 
+        print "maxpool took:", time.time()-st
     return image_d.get()
 
 if __name__ == "__main__":

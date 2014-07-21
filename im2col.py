@@ -5,6 +5,8 @@ import pycuda.driver as cu
 import pycuda.gpuarray as gpu
 import pycuda.autoinit
 
+global im2col
+
 im2col_kernel = """
 // CUDA: grid stride looping
 #define CUDA_KERNEL_LOOP(i, n) \
@@ -36,24 +38,10 @@ __global__ void im2col_gpu_kernel(const int n, const float* data_im, const int h
 }
 """
 
-sgemm_kernel = """
-#include <cuda_runtime.h>
-#include <cublas_v2.h>
-__global__ void sgemm(const int m, const int n, const int k, const float alpha, const float beta, const float *A, const float* B, float *C)
-{
-    if (threadIdx.x == 0) {
-        cublasHandle_t handle;
-        cublasStatus_t status = cublasCreate(&handle);
-        cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, n, m, k, &alpha, B, n, A, k, &beta, C, n);
-    }
-}
-"""
-
 def get_gpu_func(module, func_name):
     return nvcc.SourceModule(module).get_function(func_name)
 
 def compute_im2col(in_array, ksize, pad, stride):
-    im2col = get_gpu_func(im2col_kernel, "im2col_gpu_kernel")
     height = np.int32(in_array.shape[0]); width = np.int32(in_array.shape[1]); channels = np.int32(in_array.shape[2]);
     height_col = np.int32((height + 2 * pad - ksize) / stride + 1)
     width_col = np.int32((width + 2 * pad - ksize) / stride + 1)
@@ -66,7 +54,6 @@ def compute_im2col(in_array, ksize, pad, stride):
     return result
 
 def compute_sgemm(col, kernel, bias):
-    sgemm = get_gpu_func(sgemm_kernel, "sgemm"); 
     alpha = np.float32(1.0); beta = np.float32(1.0);
     blocksize = (1, 1, 1)
     gridsize = (1, 1, 1)
@@ -77,6 +64,10 @@ def compute_sgemm(col, kernel, bias):
     k = np.int32(col.shape[0])
     sgemm(m, n, k, alpha, beta, kernel, col, bias);
     return 
+
+def init():
+    global im2col
+    im2col = get_gpu_func(im2col_kernel, "im2col_gpu_kernel")
 
 if __name__ == "__main__":
     A = np.float32(np.reshape(np.arange(0, 32, 1), [4, 4, 2]))

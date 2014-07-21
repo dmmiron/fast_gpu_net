@@ -1,10 +1,12 @@
 import numpy as np
+import time
 
 import pycuda.compiler as nvcc
 import pycuda.driver as cu
 import pycuda.gpuarray as gpu
 import pycuda.autoinit
 
+global maxpool; global maxout;
 maxes = """
 #include <stdio.h>
 __global__ void maxpool_gpu_kernel(const float *input, const int in_height, const int in_width, const int channels, const int ksize, const int out_height, const int out_width, float *output) {
@@ -71,9 +73,6 @@ def get_gpu_func(module, func_name):
     return nvcc.SourceModule(module).get_function(func_name)
 
 def compute_max(in_array, max_dims):
-    maxpool =  get_gpu_func(maxes, "maxpool_gpu_kernel")
-    maxout = get_gpu_func(maxes, "maxout_gpu_kernel")
-    
     p_height = np.int32((in_array.shape[0]+max_dims[0]-1)/max_dims[0])
     p_width = np.int32((in_array.shape[1]+max_dims[1]-1)/max_dims[1])
     p_channels = np.int32(in_array.shape[2])
@@ -89,11 +88,22 @@ def compute_max(in_array, max_dims):
     grido = ((kernels+block_xo-1), 1, 1)
 
     temp = gpu.empty((p_height, p_width, p_channels), np.float32)
+    st = time.time()
     maxpool(in_array, np.int32(in_array.shape[0]), np.int32(in_array.shape[1]), np.int32(in_array.shape[2]), np.int32(max_dims[0]), p_height, p_width, temp, block=blockp, grid=gridp)
-    #print temp.get()
+    print "maxpool only, took:", time.time()-st
+
     result = gpu.empty((o_height, o_width, o_channels), np.float32)
+    st = time.time()
     maxout(temp, p_height, p_width, p_channels, o_channels, np.int32(max_dims[2]), result, block=blocko, grid=grido)
+    print "maxout only, took:", time.time()-st
     return result
+
+def init():
+    """compile the kernels"""
+    global maxpool
+    global maxout
+    maxpool = get_gpu_func(maxes, "maxpool_gpu_kernel")
+    maxout = get_gpu_func(maxes, "maxout_gpu_kernel")
 
 if __name__ == "__main__":
 
