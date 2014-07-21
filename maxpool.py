@@ -25,8 +25,8 @@ __global__ void maxpool_gpu_kernel(const float *input, const int in_height, cons
         float max = input[start_x+start_y*in_width+z_idx*in_width*in_height];
         for (int i = 0; i < ksize; ++i) {
             for (int j = 0; j < ksize; ++j) {
-                x_idx = start_x + i;
-                y_idx = start_y + j;
+                x_idx = start_x + j;
+                y_idx = start_y + i;
                 //check for valid index
                 if (x_idx >= 0 && x_idx < in_width && y_idx >= 0 && y_idx < in_height) {
                     temp = input[x_idx + y_idx*in_width + z_idx*in_width*in_height]; //convert from x, y, z to single idx
@@ -90,7 +90,7 @@ def compute_max(in_array, max_dims):
 
     temp = gpu.empty((p_height, p_width, p_channels), np.float32)
     maxpool(in_array, np.int32(in_array.shape[0]), np.int32(in_array.shape[1]), np.int32(in_array.shape[2]), np.int32(max_dims[0]), p_height, p_width, temp, block=blockp, grid=gridp)
-    print temp.get()
+    #print temp.get()
     result = gpu.empty((o_height, o_width, o_channels), np.float32)
     maxout(temp, p_height, p_width, p_channels, o_channels, np.int32(max_dims[2]), result, block=blocko, grid=grido)
     return result
