@@ -13,19 +13,23 @@ import pycuda.autoinit
 from scipy.signal import convolve
 
 def test_im2col():
-    image = np.float32(np.reshape(np.arange(0, 50, 1), [5, 5, 2]))
-    print to_serial(image)
+    im2col_gpu.init()
+    image = np.float32(np.reshape(np.arange(0, 200, 1), [10, 10, 2]))
     image_d = gpu.to_gpu(image)
-    for i in range(5):
+    """for i in range(5):
         for j in range(5):
             for k in range(2):
                 print (image[i, j, k]),
             print "\n"
         print "\n"
     print "\n"
+    """
     print image
-    col = im2col_gpu.compute_im2col(image_d, np.int32(4), np.int32(0), np.int32(1))
-    print col
+    for i in range(2):
+        for j in range(2):
+            offset = i*10 + j
+            col = im2col_gpu.compute_im2col(image_d, 5, 5, 2, np.int32(4), np.int32(0), np.int32(1), offset)
+            print col
 
 
 def main():
@@ -64,7 +68,7 @@ def main():
      
      
     #perform serial computation
-    """
+    """ 
     conv = comp_convolution(ser_image, ser_kernels_0, pad, stride)
     conv_max = maxout(conv, 2, 2)
     conv = comp_convolution(conv_max, ser_kernels_1, pad, stride)
@@ -73,7 +77,7 @@ def main():
     conv_max = maxout(conv, 2, 4)
     conv_max_r = conv_max.ravel()
     result = np.dot(weights, conv_max_r)
-    """
+    """ 
     
     
     kernels = [kernels_0, kernels_1, kernels_2]
@@ -177,7 +181,7 @@ def compute_sgemm(col, kernel, bias):
  
 
 def gpu_computation(image, kernels, biases, max_sizes):
-    pad = 0; stride = 1; 
+    pad = 0; stride = 1; offset = 0; 
     image_d = gpu.to_gpu(image)
     
     for layer_n, (kernel, bias, max_size) in enumerate(zip(kernels, biases, max_sizes)):
@@ -191,7 +195,7 @@ def gpu_computation(image, kernels, biases, max_sizes):
         width_col = (image_d.shape[1] + 2 * pad - ksize) / stride + 1 
         kernel_d = kernel_d.reshape(kchannels, ksize*ksize*image_d.shape[2])
         
-        result = im2col_gpu.compute_im2col(image_d, np.int32(ksize), np.int32(pad), np.int32(stride))
+        result = im2col_gpu.compute_im2col(image_d, image_d.shape[0], image_d.shape[1], image_d.shape[2], np.int32(ksize), np.int32(pad), np.int32(stride), offset)
         bias_d = bias_d.reshape(kernel_d.shape[0], result.shape[1])
         
         compute_sgemm(result, kernel_d, bias_d)
@@ -202,3 +206,4 @@ def gpu_computation(image, kernels, biases, max_sizes):
 
 if __name__ == "__main__":
     main()
+    #test_im2col()

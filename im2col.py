@@ -13,7 +13,8 @@ im2col_kernel = """
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; \
             i < (n); \
             i += blockDim.x * gridDim.x)
-__global__ void im2col_gpu_kernel(const int n, const float* data_im, const int height, const int width, const int ksize, const int pad, const int stride, const int height_col, const int width_col, float* data_col) {
+__global__ void im2col_gpu_kernel(const int n, const float* data_im, const int height, const int width, const int ksize, const int pad, const int stride, const int height_col, const int width_col, const int offset, float* data_col) {
+    data_im += offset;
     CUDA_KERNEL_LOOP(index, n) {
         int w_out = index % width_col;
         index /= width_col;
@@ -41,8 +42,9 @@ __global__ void im2col_gpu_kernel(const int n, const float* data_im, const int h
 def get_gpu_func(module, func_name):
     return nvcc.SourceModule(module).get_function(func_name)
 
-def compute_im2col(in_array, ksize, pad, stride):
-    height = np.int32(in_array.shape[0]); width = np.int32(in_array.shape[1]); channels = np.int32(in_array.shape[2]);
+def compute_im2col(in_array, height, width, channels, ksize, pad, stride, start_idx):
+    #height, width, channels refer to dimensions of sub_image while in_array is gpu handle to entire original image
+    #height = np.int32(in_array.shape[0]); width = np.int32(in_array.shape[1]); channels = np.int32(in_array.shape[2]);
     height_col = np.int32((height + 2 * pad - ksize) / stride + 1)
     width_col = np.int32((width + 2 * pad - ksize) / stride + 1)
     num_kernels = np.int32(height_col*width_col*channels)
@@ -54,7 +56,7 @@ def compute_im2col(in_array, ksize, pad, stride):
     start = cu.Event()
     end = cu.Event()
     start.record()
-    im2col(num_kernels, in_array, height, width, np.int32(ksize), np.int32(pad), np.int32(stride), height_col, width_col, result, block=blocksize, grid=gridsize)
+    im2col(num_kernels, in_array, np.int32(height), np.int32(width), np.int32(ksize), np.int32(pad), np.int32(stride), height_col, width_col, np.int32(start_idx), result, block=blocksize, grid=gridsize)
     end.record()
     end.synchronize()
     print "im2col took: {0:.4e} seconds".format(end.time_since(start)/1000)
@@ -65,8 +67,14 @@ def init():
     im2col = get_gpu_func(im2col_kernel, "im2col_gpu_kernel")
 
 if __name__ == "__main__":
-    A = np.float32(np.reshape(np.arange(0, 32, 1), [4, 4, 2]))
+    init()
+    A = np.float32(np.reshape(np.arange(0, 128, 1), [8, 8, 2]))
     print A
-    A_d = gpu.to_gpu(A)
-    result = compute_im2col(A_d, 2, 0, 1)
+    A_d = gpu.to_gpu(A) 
+    print A_d
+
+    for i in range(4):
+        for j in range(4):
+            result = compute_im2col(A_d[i:i+4, j:j+4], 2, 0, 1)
+            print i, j, result
 
