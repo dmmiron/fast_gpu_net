@@ -42,20 +42,20 @@ __global__ void im2col_gpu_kernel(const int n, const float* data_im, const int h
 def get_gpu_func(module, func_name):
     return nvcc.SourceModule(module).get_function(func_name)
 
-def compute_im2col(in_array, height, width, channels, ksize, pad, stride, start_idx):
-    #height, width, channels refer to dimensions of sub_image while in_array is gpu handle to entire original image
-    #height = np.int32(in_array.shape[0]); width = np.int32(in_array.shape[1]); channels = np.int32(in_array.shape[2]);
-    height_col = np.int32((height + 2 * pad - ksize) / stride + 1)
-    width_col = np.int32((width + 2 * pad - ksize) / stride + 1)
-    num_kernels = np.int32(height_col*width_col*channels)
+def compute_im2col(in_array, window_height, window_width, window_channels, ksize, pad, stride, start_idx):
+    height = np.int32(in_array.shape[0]); width = np.int32(in_array.shape[1]); 
+    height_col = np.int32((window_height + 2 * pad - ksize) / stride + 1)
+    width_col = np.int32((window_width + 2 * pad - ksize) / stride + 1)
+    num_kernels = np.int32(height_col*width_col*window_channels)
     threads = 256 
     blocksize = (threads, 1, 1)
     gridsize = ((num_kernels+threads -1)/threads, 1, 1)
-    result = gpu.empty((ksize*ksize*channels, height_col*width_col), np.float32)
+    result = gpu.empty((ksize*ksize*window_channels, height_col*width_col), np.float32)
 
     start = cu.Event()
     end = cu.Event()
     start.record()
+    #im2col(num_kernels, in_array, np.int32(height), np.int32(width), np.int32(ksize), np.int32(pad), np.int32(stride), height_col, width_col, np.int32(start_idx), result, block=blocksize, grid=gridsize)
     im2col(num_kernels, in_array, np.int32(height), np.int32(width), np.int32(ksize), np.int32(pad), np.int32(stride), height_col, width_col, np.int32(start_idx), result, block=blocksize, grid=gridsize)
     end.record()
     end.synchronize()
