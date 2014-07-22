@@ -10,8 +10,7 @@ import pycuda.driver as cu
 import pycuda.gpuarray as gpu
 import pycuda.autoinit
 
-from scipy.signal import convolve as convolve_s
-from scipy.ndimage.filters import convolve
+from scipy.signal import convolve
 
 def test_im2col():
     image = np.float32(np.reshape(np.arange(0, 50, 1), [5, 5, 2]))
@@ -65,6 +64,7 @@ def main():
      
      
     #perform serial computation
+    """
     conv = comp_convolution(ser_image, ser_kernels_0, pad, stride)
     conv_max = maxout(conv, 2, 2)
     conv = comp_convolution(conv_max, ser_kernels_1, pad, stride)
@@ -73,6 +73,7 @@ def main():
     conv_max = maxout(conv, 2, 4)
     conv_max_r = conv_max.ravel()
     result = np.dot(weights, conv_max_r)
+    """
     
     
     kernels = [kernels_0, kernels_1, kernels_2]
@@ -80,10 +81,11 @@ def main():
     max_sizes = [max_0, max_1, max_2]
     
     #perform parallel computation
-    st = time.time()
-    output = gpu_computation(image, kernels, biases, max_sizes)
-    print "total gpu:", time.time()-st 
-    out_max = from_serial(conv_max)
+    num_trials = 5
+    for i in range(num_trials):
+        print "Trial {0}\n".format(i)
+        output = gpu_computation(image, kernels, biases, max_sizes)
+    #out_max = from_serial(conv_max)
     #print out_max-output 
     #print out_max, output
     #print np.allclose(output, out_max, rtol=1e-04, atol=1e-07) 
@@ -121,7 +123,7 @@ def comp_convolution(image, kernels, pad, stride):
             image_layer = image[layer, :, :]
             #NOTE THE REVERSED KERNEL
             #STILL NOT CLEAR WHY THIS SHOULD BE NECESSARY
-            full_conv2d += convolve_s(image_layer, kernel_layer[::-1, ::-1], mode='valid')
+            full_conv2d += convolve(image_layer, kernel_layer[::-1, ::-1], mode='valid')
         conv[ki, :, :] = full_conv2d
     return conv
 
@@ -155,9 +157,22 @@ def compute_sgemm(col, kernel, bias):
     m = np.int32(kernel.shape[0])
     k = np.int32(kernel.shape[1]) 
     n = np.int32(col.shape[1])
+    #2k-1 operatiosn per entry in C matrix. C is m*n so m*n*(2k-1) for mat mult
+    #another m*n additions to perform AB+C
+    #lower bound ignoring alpha and beta multiplications
+    flop = 2*m*n*k
 
     handle = cublas.cublasCreate()
+    start = cu.Event()
+    end = cu.Event()
+    start.record()
     cublas.cublasSgemm(handle, 'n', 'n', n, m, k, alpha, col.gpudata, n, kernel.gpudata, k, beta, bias.gpudata, n);
+    end.record()
+    end.synchronize()
+    time = end.time_since(start)/1000
+    
+    print "sgemm took:\n\t{0:.4e} seconds\n\t{1:.4e} flop\n\t{2:.4e} flops".format(time, flop, flop/time)
+    
     cublas.cublasDestroy(handle)
  
 
@@ -165,7 +180,8 @@ def gpu_computation(image, kernels, biases, max_sizes):
     pad = 0; stride = 1; 
     image_d = gpu.to_gpu(image)
     
-    for (kernel, bias, max_size) in zip(kernels, biases, max_sizes):
+    for layer_n, (kernel, bias, max_size) in enumerate(zip(kernels, biases, max_sizes)):
+        print "layer {0}".format(layer_n)
         kernel_d = gpu.to_gpu(kernel)
         bias_d = gpu.to_gpu(bias)
 
@@ -175,21 +191,14 @@ def gpu_computation(image, kernels, biases, max_sizes):
         width_col = (image_d.shape[1] + 2 * pad - ksize) / stride + 1 
         kernel_d = kernel_d.reshape(kchannels, ksize*ksize*image_d.shape[2])
         
-        st = time.time()
         result = im2col_gpu.compute_im2col(image_d, np.int32(ksize), np.int32(pad), np.int32(stride))
-        print "im2col took:", time.time()-st
         bias_d = bias_d.reshape(kernel_d.shape[0], result.shape[1])
         
-        st = time.time()
         compute_sgemm(result, kernel_d, bias_d)
-        print "sgemm took:", time.time()-st
         bias_d = bias_d.reshape(np.int32(height_col), np.int32(width_col), np.int32(kchannels))
-        st = time.time()
         image_d = maxpool_gpu.compute_max(bias_d, np.int32(max_size)) 
-        print "maxpool took:", time.time()-st
+        print ""
     return image_d.get()
 
 if __name__ == "__main__":
-    st = time.time()
     main()
-    print time.time()-st

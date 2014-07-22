@@ -81,21 +81,34 @@ def compute_max(in_array, max_dims):
 
     block_xp = 8; block_yp = 8; block_zp = 2;
     block_xo = 256; block_yo = 1; block_zo = 1;
+    #block_xo = o_height; block_yo = o_width; block_zo = 2; 
+
     blockp = (block_xp, block_yp, block_zp)
     blocko = (block_xo, block_yo, block_zo)
     gridp = ((p_height + block_xp - 1)/block_xp, (p_width + block_yp - 1)/block_yp, (p_channels+block_zp - 1)/block_zp)
+
     kernels = o_height*o_width*o_channels
-    grido = ((kernels+block_xo-1), 1, 1)
+    grido = ((kernels+block_xo-1)/block_xo, 1, 1)
+    #grido = (1, 1, (kernels+block_zo-1))
 
     temp = gpu.empty((p_height, p_width, p_channels), np.float32)
-    st = time.time()
+
+    start = cu.Event()
+    end = cu.Event()
+    start.record()
     maxpool(in_array, np.int32(in_array.shape[0]), np.int32(in_array.shape[1]), np.int32(in_array.shape[2]), np.int32(max_dims[0]), p_height, p_width, temp, block=blockp, grid=gridp)
-    print "maxpool only, took:", time.time()-st
+    end.record()
+    end.synchronize()
+    print "maxpool took: {0:.4e} seconds".format(end.time_since(start)/1000)
 
     result = gpu.empty((o_height, o_width, o_channels), np.float32)
-    st = time.time()
+    start.record()
     maxout(temp, p_height, p_width, p_channels, o_channels, np.int32(max_dims[2]), result, block=blocko, grid=grido)
-    print "maxout only, took:", time.time()-st
+    end.record()
+    end.synchronize()
+    print "maxout took: {0:.4e} seconds".format(end.time_since(start)/1000)
+    
+
     return result
 
 def init():

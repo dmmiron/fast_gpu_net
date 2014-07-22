@@ -50,20 +50,15 @@ def compute_im2col(in_array, ksize, pad, stride):
     blocksize = (threads, 1, 1)
     gridsize = ((num_kernels+threads -1)/threads, 1, 1)
     result = gpu.empty((ksize*ksize*channels, height_col*width_col), np.float32)
+
+    start = cu.Event()
+    end = cu.Event()
+    start.record()
     im2col(num_kernels, in_array, height, width, np.int32(ksize), np.int32(pad), np.int32(stride), height_col, width_col, result, block=blocksize, grid=gridsize)
+    end.record()
+    end.synchronize()
+    print "im2col took: {0:.4e} seconds".format(end.time_since(start)/1000)
     return result
-
-def compute_sgemm(col, kernel, bias):
-    alpha = np.float32(1.0); beta = np.float32(1.0);
-    blocksize = (1, 1, 1)
-    gridsize = (1, 1, 1)
-
-    #(mxn)x(nxk)
-    m = np.int32(kernel.shape[0])
-    n = np.int32(kernel.shape[1]) 
-    k = np.int32(col.shape[0])
-    sgemm(m, n, k, alpha, beta, kernel, col, bias);
-    return 
 
 def init():
     global im2col
