@@ -1,4 +1,5 @@
 import numpy as np
+import sys
 
 import pycuda.compiler as nvcc
 import pycuda.driver as cu
@@ -42,7 +43,7 @@ __global__ void im2col_gpu_kernel(const int n, const float* data_im, const int h
 def get_gpu_func(module, func_name):
     return nvcc.SourceModule(module).get_function(func_name)
 
-def compute_im2col(in_array, window_height, window_width, window_channels, ksize, pad, stride, start_idx):
+def compute_im2col(in_array, window_height, window_width, window_channels, ksize, pad, stride, start_idx, stream):
     height = np.int32(in_array.shape[0]); width = np.int32(in_array.shape[1]); 
     height_col = np.int32((window_height + 2 * pad - ksize) / stride + 1)
     width_col = np.int32((window_width + 2 * pad - ksize) / stride + 1)
@@ -52,14 +53,14 @@ def compute_im2col(in_array, window_height, window_width, window_channels, ksize
     gridsize = ((num_kernels+threads -1)/threads, 1, 1)
     result = gpu.empty((ksize*ksize*window_channels, height_col*width_col), np.float32)
 
-    start = cu.Event()
-    end = cu.Event()
-    start.record()
+    #start = cu.Event()
+    #end = cu.Event()
+    #start.record()
     #im2col(num_kernels, in_array, np.int32(height), np.int32(width), np.int32(ksize), np.int32(pad), np.int32(stride), height_col, width_col, np.int32(start_idx), result, block=blocksize, grid=gridsize)
-    im2col(num_kernels, in_array, np.int32(height), np.int32(width), np.int32(ksize), np.int32(pad), np.int32(stride), height_col, width_col, np.int32(start_idx), result, block=blocksize, grid=gridsize)
-    end.record()
-    end.synchronize()
-    print "im2col took: {0:.4e} seconds".format(end.time_since(start)/1000)
+    im2col(num_kernels, in_array, np.int32(height), np.int32(width), np.int32(ksize), np.int32(pad), np.int32(stride), height_col, width_col, np.int32(start_idx), result, block=blocksize, grid=gridsize, stream=stream)
+    #end.record()
+    #end.synchronize()
+    #print "im2col took: {0:.4e} seconds".format(end.time_since(start)/1000)
     return result
 
 def init():

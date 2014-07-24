@@ -72,7 +72,7 @@ __global__ void maxout_gpu_kernel(const float *input, const int height, const in
 def get_gpu_func(module, func_name):
     return nvcc.SourceModule(module).get_function(func_name)
 
-def compute_max(in_array, max_dims):
+def compute_max(in_array, max_dims, stream):
     p_height = np.int32((in_array.shape[0]+max_dims[0]-1)/max_dims[0])
     p_width = np.int32((in_array.shape[1]+max_dims[1]-1)/max_dims[1])
     p_channels = np.int32(in_array.shape[2])
@@ -93,20 +93,20 @@ def compute_max(in_array, max_dims):
 
     temp = gpu.empty((p_height, p_width, p_channels), np.float32)
 
-    start = cu.Event()
-    end = cu.Event()
-    start.record()
-    maxpool(in_array, np.int32(in_array.shape[0]), np.int32(in_array.shape[1]), np.int32(in_array.shape[2]), np.int32(max_dims[0]), p_height, p_width, temp, block=blockp, grid=gridp)
-    end.record()
-    end.synchronize()
-    print "maxpool took: {0:.4e} seconds".format(end.time_since(start)/1000)
+    #start = cu.Event()
+    #end = cu.Event()
+    #start.record()
+    maxpool(in_array, np.int32(in_array.shape[0]), np.int32(in_array.shape[1]), np.int32(in_array.shape[2]), np.int32(max_dims[0]), p_height, p_width, temp, block=blockp, grid=gridp, stream=stream)
+    #end.record()
+    #end.synchronize()
+    #print "maxpool took: {0:.4e} seconds".format(end.time_since(start)/1000)
 
     result = gpu.empty((o_height, o_width, o_channels), np.float32)
-    start.record()
-    maxout(temp, p_height, p_width, p_channels, o_channels, np.int32(max_dims[2]), result, block=blocko, grid=grido)
-    end.record()
-    end.synchronize()
-    print "maxout took: {0:.4e} seconds".format(end.time_since(start)/1000)
+    #start.record()
+    maxout(temp, p_height, p_width, p_channels, o_channels, np.int32(max_dims[2]), result, block=blocko, grid=grido, stream=stream)
+    #end.record()
+    #end.synchronize()
+    #print "maxout took: {0:.4e} seconds".format(end.time_since(start)/1000)
     
 
     return result

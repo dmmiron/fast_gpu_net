@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 import sys
 import numpy as np
 import time
@@ -36,19 +37,23 @@ def main():
     #compile gpu kernels
     maxpool_gpu.init()
     im2col_gpu.init()
+    nstreams = int(sys.argv[1])
+    streams = []
+    for n in range(nstreams):
+        streams.append(cu.Stream())
     #set up test data
     #image = (np.random.rand(1, 49, 49) - .5) * 2
-    #image = np.float32((np.random.rand(49, 49, 1) - .5) * 2)
+    image = np.float32((np.random.rand(100, 100, 1) - .5) * 2)
     #image = np.float32((np.reshape(np.arange(0, 10*10, 1), [10, 10, 1])))
-    image = np.float32((np.reshape(np.arange(0, 100*100, 1), [100, 100, 1])))
+    #image = np.float32((np.reshape(np.arange(0, 100*100, 1), [100, 100, 1])))
 
     #print image
     #image = np.float32(np.reshape(np.arange(0, 49*49, 1), [49, 49, 1]))
     ser_image = to_serial(image)
     #kernels, layers per kernel, width, height
 
-    #kernels_0 = np.float32((np.random.rand(4, 4, 1, 64) - .5 ) * 2)
-    kernels_0 = np.float32(np.reshape(np.arange(0, 4*4*64, 1), [4, 4, 1, 64]))
+    kernels_0 = np.float32((np.random.rand(4, 4, 1, 64) - .5 ) * 2)
+    #kernels_0 = np.float32(np.reshape(np.arange(0, 4*4*64, 1), [4, 4, 1, 64]))
     ser_kernels_0 = to_serial(kernels_0)
     bias_0 = np.float32(np.zeros((46, 46, 64)))
     ser_bias_0 = to_serial(bias_0)
@@ -88,7 +93,8 @@ def main():
     biases = [bias_0, bias_1, bias_2]
     max_sizes = [max_0, max_1, max_2]
     #when using actual images will need to offset pixels so they are the center of the window
-    pixels = [(0, 0)]
+    pixels = [(0, 0), (1, 0), (0, 1)]
+    pixels = [(x, y) for x in range(30) for y in range(30)]
     #window = (49, 49)
     window = (49, 49)
     
@@ -96,7 +102,8 @@ def main():
     num_trials = 1
     for i in range(num_trials):
         print "Trial {0}\n".format(i)
-        output = gpu_computation(image, kernels, biases, max_sizes, pixels, window)
+        output = gpu_computation(image, kernels, biases, max_sizes, pixels, window, streams)
+    #print output
     #out_max = from_serial(conv_max)
     #print out_max-output 
     #print out_max, output
@@ -160,10 +167,9 @@ def maxout(image, max_ksize_xy, max_ksize_z):
 
     return output
 
-def compute_sgemm(col, kernel, bias):
+
+def compute_sgemm(col, kernel, bias, stream, handle):
     alpha = np.float32(1.0); beta = np.float32(1.0);
-    blocksize = (1, 1, 1)
-    gridsize = (1, 1, 1)
 
     #(mxk)x(kxn)
     m = np.int32(kernel.shape[0])
@@ -174,27 +180,42 @@ def compute_sgemm(col, kernel, bias):
     #lower bound ignoring alpha and beta multiplications
     flop = 2*m*n*k
 
-    handle = cublas.cublasCreate()
-    start = cu.Event()
-    end = cu.Event()
-    start.record()
-    cublas.cublasSgemm(handle, 'n', 'n', n, m, k, alpha, col.gpudata, n, kernel.gpudata, k, beta, bias.gpudata, n);
-    end.record()
-    end.synchronize()
-    time = end.time_since(start)/1000
+    cublas.cublasSetStream(handle, stream.handle)
+    #start = cu.Event()
+    #end = cu.Event()
+    #start.record()
+    cublas.cublasSgemm(handle, 'n', 'n', n, m, k, alpha, col.ptr, n, kernel.ptr, k, beta, bias.ptr, n);
+    #end.record()
+
+    #end.synchronize()
+    #time = end.time_since(start)/1000
     
-    print "sgemm took:\n\t{0:.4e} seconds\n\t{1:.4e} flop\n\t{2:.4e} flops".format(time, flop, flop/time)
+    #print "sgemm took:\n\t{0:.4e} seconds\n\t{1:.4e} flop\n\t{2:.4e} flops".format(time, flop, flop/time)
     
-    cublas.cublasDestroy(handle)
  
 
-def gpu_computation(image, kernels, biases, max_sizes, pixels, window_sizes):
-    pad = 0; stride = 1; offset = 0; 
+def gpu_computation(image, kernels, biases, max_sizes, pixels, window_sizes, streams):
+    handle = cublas.cublasCreate()
+    results = []
+    pad = 0; stride = 1; 
     full_image_d = gpu.to_gpu(image)
-    image_d = full_image_d
-    for pixel in pixels:
+    biases_d = []
+    kernels_d = []
+    kernel_dims = []
+    results = []
+    for bias, kernel in zip(biases, kernels):
+        biases_d.append(gpu.to_gpu(bias))
+        kernels_d.append(gpu.to_gpu(kernel))
+        kernel_dims.append(kernel.shape)
+
+    nstreams = len(streams)
+    
+    for (pix_id, pixel) in enumerate(pixels):
+        stream = streams[pix_id % nstreams]
+        image_d = full_image_d
         offset = pixel[0]*full_image_d.shape[1] + pixel[1]
-        for layer_n, (kernel, bias, max_size) in enumerate(zip(kernels, biases, max_sizes)):
+        for layer_n, (kernel_d, bias_d, max_size, kdim) in enumerate(zip(kernels_d, biases_d, max_sizes, kernel_dims)):
+            sgemm_bias = bias_d.copy()
             #only the first layer uses the full image with an offset
             if (layer_n == 0):
                 height = window_sizes[0]
@@ -208,25 +229,26 @@ def gpu_computation(image, kernels, biases, max_sizes, pixels, window_sizes):
 
             #print height, width, channels
             print "layer {0}".format(layer_n)
-            kernel_d = gpu.to_gpu(kernel)
-            bias_d = gpu.to_gpu(bias)
+            #kernel_d = gpu.to_gpu_async(kernel, stream=stream)
+            #bias_d = gpu.to_gpu_async(bias, stream=stream)
     
-            ksize = kernel.shape[0]
-            kchannels = kernel.shape[3]
+            ksize = kdim[0]
+            kchannels = kdim[3]
             height_col = (height + 2 * pad - ksize) / stride + 1
             width_col = (width + 2 * pad - ksize) / stride + 1 
             kernel_d = kernel_d.reshape(kchannels, ksize*ksize*channels)
 
-            result = im2col_gpu.compute_im2col(image_d, height, width, channels, np.int32(ksize), np.int32(pad), np.int32(stride), offset)
+            result = im2col_gpu.compute_im2col(image_d, height, width, channels, np.int32(ksize), np.int32(pad), np.int32(stride), offset, stream)
             #print result, "result"
-            bias_d = bias_d.reshape(kernel_d.shape[0], result.shape[1])
-        
-            compute_sgemm(result, kernel_d, bias_d)
-            bias_d = bias_d.reshape(np.int32(height_col), np.int32(width_col), np.int32(kchannels))
-            image_d = maxpool_gpu.compute_max(bias_d, np.int32(max_size)) 
-            #print image_d, "image_d"
-            print ""
-    return image_d.get()
+            sgemm_bias = sgemm_bias.reshape(kernel_d.shape[0], result.shape[1])
+            
+            compute_sgemm(result, kernel_d, sgemm_bias, stream, handle)
+            sgemm_bias = sgemm_bias.reshape(np.int32(height_col), np.int32(width_col), np.int32(kchannels))
+            image_d = maxpool_gpu.compute_max(sgemm_bias, np.int32(max_size), stream) 
+        results.append(image_d)
+    results = map(lambda x: x.get(), results)
+    cublas.cublasDestroy(handle)
+    return results
 
 if __name__ == "__main__":
     main()
