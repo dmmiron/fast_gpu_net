@@ -39,8 +39,8 @@ def main():
     im2col_gpu.init()
 
     batchsizes = [2**x for x in range(2, 8)]
-    #nstreams = int(sys.argv[1])
-    nstreams = 1
+    nstreams = int(sys.argv[1])
+    #nstreams = 1
     streams = []
     
     for n in range(nstreams):
@@ -189,7 +189,7 @@ def compute_sgemm_batched(cols, kernels, biases, stream, handle, m, k, n):
     #takes gpu arrays of pointers to pointers
     alpha = np.float32(1.0); beta = np.float32(1.0);
     flop = 2*m*n*k
-    print flop 
+    #print flop 
     cublas.cublasSgemmBatched(handle, 'n', 'n', n, m, k, alpha, cols.ptr, n, kernels.ptr, k, beta, biases.ptr, n, batchsize);
 
 def compute_sgemm(col, kernel, bias, stream, handle):
@@ -234,7 +234,6 @@ def gpu_computation(image, kernels, biases, max_sizes, batches, window_sizes, st
 
     nstreams = len(streams)
     #not currently using streams
-    stream = streams[0];
     offsets = [] 
     for batch in batches:
         image_ds = [full_image_d]*len(batch)
@@ -264,6 +263,7 @@ def gpu_computation(image, kernels, biases, max_sizes, batches, window_sizes, st
             kernel_ps = []; bias_ps = []; col_ps = [];
             sgemm_biases = []
             for (pix_id, pixel) in enumerate(batch):
+                stream = streams[pix_id % nstreams]
                 if (layer_n == 0):
                     offset = pixel[0]*full_image_d.shape[1] + pixel[1]
                 else:
@@ -284,6 +284,7 @@ def gpu_computation(image, kernels, biases, max_sizes, batches, window_sizes, st
             
             sgemm_biases = map(lambda bias: bias.reshape(np.int32(height_col), np.int32(width_col), np.int32(kchannels)), sgemm_biases)
             for (pix_id, pixel) in enumerate(batch):
+                 stream = streams[pix_id % nstreams]
                  image_ds[pix_id] = maxpool_gpu.compute_max(sgemm_biases[pix_id], np.int32(max_size), stream) 
         results += image_ds
     results = map(lambda x: x.get(), results)
