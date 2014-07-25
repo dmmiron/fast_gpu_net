@@ -38,7 +38,7 @@ def main():
     maxpool_gpu.init()
     im2col_gpu.init()
 
-    batchsize = 2
+    batchsizes = [2**x for x in range(2, 8)]
     #nstreams = int(sys.argv[1])
     nstreams = 1
     streams = []
@@ -82,7 +82,7 @@ def main():
      
     window = (49, 49)
     #perform serial computation
-     
+    """ 
     conv = comp_convolution(ser_image[:, :window[0], :window[1]], ser_kernels_0, ser_bias_0, pad, stride)
     conv_max = maxout(conv, 2, 2)
     conv = comp_convolution(conv_max, ser_kernels_1, ser_bias_1, pad, stride)
@@ -90,37 +90,41 @@ def main():
     conv = comp_convolution(conv_max, ser_kernels_2, ser_bias_2, pad, stride)
     conv_max = maxout(conv, 2, 4)
     conv_max_r = conv_max.ravel()
-    print weights.shape, conv_max_r.shape
     result = np.dot(weights, conv_max_r)
-     
+    """ 
     
     
     kernels = [kernels_0, kernels_1, kernels_2]
     biases = [bias_0, bias_1, bias_2]
     max_sizes = [max_0, max_1, max_2]
     #when using actual images will need to offset pixels so they are the center of the window
-    pixels = [(0, 0), (1, 0), (0, 1), (1, 1)]
-    batches = []
-    for i in range(len(pixels)/batchsize):
-        start = i*batchsize
-        batches.append(pixels[start:start+batchsize])
-    print batches
-    #pixels = [(x, y) for x in range(30) for y in range(30)]
-    #window = (49, 49)
-    
+    #pixels = [(0, 0), (1, 0), (0, 1), (1, 1)]
+    pixels = [(x, y) for x in range(32) for y in range(32)]
+    num_trials = 3
     #perform parallel computation
-    num_trials = 1
-    for i in range(num_trials):
-        print "Trial {0}\n".format(i)
-        output = gpu_computation(image, kernels, biases, max_sizes, batches, window, streams)
-    print output
-    print len(output)
+    for batchsize in batchsizes:
+        batches = []
+        for i in range(len(pixels)/batchsize):
+            start = i*batchsize
+            batches.append(pixels[start:start+batchsize])
+        print "Batchsize: {0}\nBatches: {1}\nPixels: {2}\n".format(batchsize, len(batches), batchsize*len(batches))
+        st = time.time()
+        for i in range(num_trials):
+            print "Trial {0}\n".format(i)
+            output = gpu_computation(image, kernels, biases, max_sizes, batches, window, streams)
+            print "Time so far {0:.4e} seconds".format(time.time()-st)
+        tot = time.time()-st
+        print "Total time: {0:.4e} seconds".format(tot)
+        print "Time per pixel {0:.4e} seconds".format(tot/(len(batches)*batchsize*num_trials))
+    
+    #print output
+    #print len(output)
 
-    out_max = from_serial(conv_max)
-    print out_max-output[0]
+    #out_max = from_serial(conv_max)
+    #print out_max-output[0]
     #print out_max, output
-    print np.allclose(output[0], out_max, rtol=1e-04, atol=1e-07) 
-    print np.where(np.isclose(output[0], out_max)==False)
+    #print np.allclose(output[0], out_max, rtol=1e-04, atol=1e-07) 
+    #print np.where(np.isclose(output[0], out_max)==False)
 
 def to_serial(array):
     """This method converts the numpy default row-major ordering into an ordering to match the way we are indexing on the gpu. In particular each 2D image slice is indexed in a row-major format (i,j). However, inconsistent with row major ordering we traverse each slice before changing to a new slice. If the array is 4d (kernels) then we traverse the 4th dimension (each 3d kernel last). Thus the indices change (fastest to slowest) in the order column, row, slice, stack"""
@@ -246,7 +250,7 @@ def gpu_computation(image, kernels, biases, max_sizes, batches, window_sizes, st
                 width = image_ds[0].shape[1]
                 channels = image_ds[0].shape[2]
             #print height, width, channels
-            print "layer {0}".format(layer_n)
+            #print "layer {0}".format(layer_n)
             #kernel_d = gpu.to_gpu_async(kernel, stream=stream)
             #bias_d = gpu.to_gpu_async(bias, stream=stream)
     
@@ -259,9 +263,7 @@ def gpu_computation(image, kernels, biases, max_sizes, batches, window_sizes, st
             cols = []
             kernel_ps = []; bias_ps = []; col_ps = [];
             sgemm_biases = []
-            print batch
             for (pix_id, pixel) in enumerate(batch):
-                print pixel
                 if (layer_n == 0):
                     offset = pixel[0]*full_image_d.shape[1] + pixel[1]
                 else:
@@ -283,7 +285,6 @@ def gpu_computation(image, kernels, biases, max_sizes, batches, window_sizes, st
             sgemm_biases = map(lambda bias: bias.reshape(np.int32(height_col), np.int32(width_col), np.int32(kchannels)), sgemm_biases)
             for (pix_id, pixel) in enumerate(batch):
                  image_ds[pix_id] = maxpool_gpu.compute_max(sgemm_biases[pix_id], np.int32(max_size), stream) 
-            #print image_ds[0]
         results += image_ds
     results = map(lambda x: x.get(), results)
     cublas.cublasDestroy(handle)
