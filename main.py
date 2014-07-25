@@ -80,13 +80,14 @@ def main():
     stride = np.int32(1)
      
      
+    window = (49, 49)
     #perform serial computation
      
-    conv = comp_convolution(ser_image, ser_kernels_0, pad, stride)
+    conv = comp_convolution(ser_image[:, :window[0], :window[1]], ser_kernels_0, ser_bias_0, pad, stride)
     conv_max = maxout(conv, 2, 2)
-    conv = comp_convolution(conv_max, ser_kernels_1, pad, stride)
+    conv = comp_convolution(conv_max, ser_kernels_1, ser_bias_1, pad, stride)
     conv_max = maxout(conv, 2, 2)
-    conv = comp_convolution(conv_max, ser_kernels_2, pad, stride)
+    conv = comp_convolution(conv_max, ser_kernels_2, ser_bias_2, pad, stride)
     conv_max = maxout(conv, 2, 4)
     conv_max_r = conv_max.ravel()
     print weights.shape, conv_max_r.shape
@@ -106,7 +107,6 @@ def main():
     print batches
     #pixels = [(x, y) for x in range(30) for y in range(30)]
     #window = (49, 49)
-    window = (49, 49)
     
     #perform parallel computation
     num_trials = 1
@@ -115,11 +115,12 @@ def main():
         output = gpu_computation(image, kernels, biases, max_sizes, batches, window, streams)
     print output
     print len(output)
-    #out_max = from_serial(conv_max)
-    #print out_max-output 
+
+    out_max = from_serial(conv_max)
+    print out_max-output[0]
     #print out_max, output
-    #print np.allclose(output, out_max, rtol=1e-04, atol=1e-07) 
-    #print np.where(np.isclose(output, out_max)==False)
+    print np.allclose(output[0], out_max, rtol=1e-04, atol=1e-07) 
+    print np.where(np.isclose(output[0], out_max)==False)
 
 def to_serial(array):
     """This method converts the numpy default row-major ordering into an ordering to match the way we are indexing on the gpu. In particular each 2D image slice is indexed in a row-major format (i,j). However, inconsistent with row major ordering we traverse each slice before changing to a new slice. If the array is 4d (kernels) then we traverse the 4th dimension (each 3d kernel last). Thus the indices change (fastest to slowest) in the order column, row, slice, stack"""
@@ -134,7 +135,7 @@ def from_serial(array):
     shape_list = shape_list[-2:] + shape_list[-3::-1]
     return array.reshape(shape_list)
 
-def comp_convolution(image, kernels, pad, stride):
+def comp_convolution(image, kernels, bias, pad, stride):
     height = image.shape[1]
     width = image.shape[2]
     #rowsxcolumnsxlayers of kernels
@@ -155,6 +156,7 @@ def comp_convolution(image, kernels, pad, stride):
             #STILL NOT CLEAR WHY THIS SHOULD BE NECESSARY
             full_conv2d += convolve(image_layer, kernel_layer[::-1, ::-1], mode='valid')
         conv[ki, :, :] = full_conv2d
+    conv += bias
     return conv
 
 
