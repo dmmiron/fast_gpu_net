@@ -189,7 +189,7 @@ def compute_sgemm_batched(cols, kernels, biases, stream, handle, m, k, n):
     #takes gpu arrays of pointers to pointers
     alpha = np.float32(1.0); beta = np.float32(1.0);
     flop = 2*m*n*k
-    
+    print flop 
     cublas.cublasSgemmBatched(handle, 'n', 'n', n, m, k, alpha, cols.ptr, n, kernels.ptr, k, beta, biases.ptr, n, batchsize);
 
 def compute_sgemm(col, kernel, bias, stream, handle):
