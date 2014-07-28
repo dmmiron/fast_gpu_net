@@ -22,7 +22,6 @@ __global__ void maxpool_gpu_kernel(const float *input, const int in_height, cons
         int x_idx; int y_idx;
         int z_idx = z_out_idx;
 
-        //float max = -FLT_MAX;
         float temp;
         float max = input[start_x+start_y*in_width+z_idx*in_width*in_height];
         for (int i = 0; i < ksize; ++i) {
@@ -51,7 +50,6 @@ __global__ void maxout_gpu_kernel(const float *input, const int height, const in
         int start = layer*ksize*stride + offset;
 
         float temp;
-        //float max = -FLT_MAX;
         float max = input[start];
         int idx;
 
@@ -67,10 +65,64 @@ __global__ void maxout_gpu_kernel(const float *input, const int height, const in
         output[out_idx] = max;
     }
 }
+
+__global__ void max_gpu_kernel_batched(const float *input, const int height, const int width, const int channels, const int out_height, const int out_width, const int out_channels, const int max_height, const int max_width, const int max_channels, const int batchsize, float *output) {
+    int x_out_idx = blockDim.x*blockIdx.x + threadIdx.x;
+    int y_out_idx = blockDim.y*blockIdx.y + threadIdx.y;
+    int batch = blockDim.z*blockIdx.z + threadIdx.z;
+    int input_offset = batch*height*width*channels;
+    int output_offset = batch*out_height*out_width*out_channels;
+    input += input_offset; output += output_offset;
+    if (x_out_idx >= 0 && x_out_idx < out_width && y_out_idx >= 0 && y_out_idx < out_height) {
+        float temp;
+        float max;
+        int start_x; int start_y; int start_z;
+        int x_idx; int y_idx; int z_idx;
+        start_x = x_out_idx*max_width; start_y = y_out_idx*max_height;
+        for (int out_k = 0; out_k < out_channels; ++out_k) {
+            start_z = out_k*max_channels;
+            max = input[start_x+start_y*width + start_z*width*height];
+            for (int i = 0; i < max_width; ++i) {
+                for (int j = 0; j < max_height; ++j) {
+                    for (int k = 0; k < max_channels; ++k) {
+                        x_idx = start_x + i;
+                        y_idx = start_y + j;
+                        z_idx = start_z + k;
+                        if (x_idx >= 0 && x_idx < width && y_idx >= 0 && y_idx < height && z_idx >= 0 && z_idx < channels) {
+                            temp = input[x_idx + y_idx*width+z_idx*width*height];
+                            if (temp > max)
+                                max = temp;
+                        }
+                    }
+                }
+            }
+            output[x_out_idx + y_out_idx*out_width + out_k*out_width*out_height] = max;
+        }
+    }
+}
+
+
 """
 
 def get_gpu_func(module, func_name):
     return nvcc.SourceModule(module).get_function(func_name)
+
+def compute_max_batched(in_array, max_dims):
+    height = in_array.shape[2]; width = in_array.shape[3]; channels = in_array.shape[1]
+    #batchsize = np.int32(in_array.shape[0])
+    batchsize = in_array.shape[0]
+    print height, width, channels, batchsize
+    max_height = max_dims[0]; max_width = max_dims[1]; max_channels = max_dims[2]
+    out_height = (height + max_height - 1) / max_height; out_width = (width + max_width -1 ) / max_width; out_channels = (channels + max_channels -1) / max_channels;
+    
+    num_kernels = out_height*out_width*batchsize;
+    output = gpu.empty((batchsize, out_channels, out_height, out_width), np.float32);
+    block_x = 16; block_y = 16;
+    block = (block_x, block_y, 1);
+    grid = (np.asscalar((out_height + block_x - 1)/block_x), np.asscalar((out_width + block_y - 1) / block_y), np.asscalar(batchsize));
+
+    max_batched(in_array, np.int32(height), np.int32(width), np.int32(channels), np.int32(out_height), np.int32(out_width), np.int32(out_channels), np.int32(max_height), np.int32(max_width), np.int32(max_channels), np.int32(batchsize), output, block=block, grid=grid); 
+    return output
 
 def compute_max(in_array, max_dims, stream):
     p_height = np.int32((in_array.shape[0]+max_dims[0]-1)/max_dims[0])
@@ -115,8 +167,10 @@ def init():
     """compile the kernels"""
     global maxpool
     global maxout
+    global max_batched
     maxpool = get_gpu_func(maxes, "maxpool_gpu_kernel")
     maxout = get_gpu_func(maxes, "maxout_gpu_kernel")
+    max_batched = get_gpu_func(maxes, "max_gpu_kernel_batched")
 
 if __name__ == "__main__":
 

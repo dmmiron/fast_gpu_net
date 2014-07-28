@@ -87,8 +87,12 @@ def get_gpu_func(module, func_name):
     return nvcc.SourceModule(module).get_function(func_name)
 
 def compute_im2col_batched(in_array, window_height, window_width, window_channels, ksize, pad, stride, offsets, layer_n, batchsize):
-    height = np.int32(in_array.shape[0]); width = np.int32(in_array.shape[1]);
-
+    if (layer_n ==0):
+        height = np.int32(in_array.shape[0])
+        width = np.int32(in_array.shape[1])
+    else:
+        height = window_height;
+        width = window_width;
     height_col = np.int32((window_height + 2 * pad - ksize) / stride + 1)
     width_col = np.int32((window_width + 2 * pad - ksize) / stride + 1)
     num_kernels = np.int32(height_col*width_col*window_channels*batchsize)
@@ -98,7 +102,6 @@ def compute_im2col_batched(in_array, window_height, window_width, window_channel
     gridsize = ((num_kernels+threads*batchsize -1)/(threads*batchsize), batchsize, 1)
     result = gpu.empty((batchsize, ksize*ksize*window_channels, height_col*width_col), np.float32)
     im2col_batched(kernels_per_batch, in_array, np.int32(height), np.int32(width), np.int32(window_channels), np.int32(ksize), np.int32(pad), np.int32(stride), height_col, width_col, offsets, np.int32(layer_n), result, block=blocksize, grid=gridsize)
-    print result
     return result
 
 
@@ -132,10 +135,11 @@ def test_batched():
     init()
     batchsize = 2
     ksize = 2; pad = 0; stride = 1;
-    offset = 0;
+    offset = [0, 0];
+    offset_d = gpu.to_gpu(np.array(offset));
     A = np.float32(np.reshape(np.arange(0, 64, 1), [4, 4, 2, 2]))
     A_d = gpu.to_gpu(A)
-    result = compute_im2col_batched(A_d, 4, 4, 2, ksize, pad, stride, offset, 1, batchsize)
+    result = compute_im2col_batched(A_d, 4, 4, 2, ksize, pad, stride, offset_d, 1, batchsize)
     print A_d
     print result
 
