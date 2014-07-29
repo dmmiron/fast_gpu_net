@@ -87,7 +87,7 @@ def get_gpu_func(module, func_name):
     return nvcc.SourceModule(module).get_function(func_name)
 
 def compute_im2col_batched(in_array, window_height, window_width, window_channels, ksize, pad, stride, offsets, layer_n, batchsize):
-    if (layer_n ==0):
+    if (layer_n == 0):
         height = np.int32(in_array.shape[0])
         width = np.int32(in_array.shape[1])
     else:
