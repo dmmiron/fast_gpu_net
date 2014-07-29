@@ -229,7 +229,7 @@ def compute_sgemm(col, kernel, bias, stream, handle):
     
     #print "sgemm took:\n\t{0:.4e} seconds\n\t{1:.4e} flop\n\t{2:.4e} flops".format(time, flop, flop/time)
 
-def compute_dims(image, biases, kernels, max_sizes, batchsize):
+def compute_dims(image, kernels, biases, max_sizes, batchsize, window_sizes, pad, stride):
     image_dims = []; col_dims = []; kernel_dims = []; bias_dims = []; sgemm_dims = []; out_dims = [];
     ksizes = []; kchannels_s = [];
     height_col = 0; width_col = 0; ksize = 0; kchannels = 0; m = 0; k = 0; n = 0; out_height = 0; out_width = 0; out_channels = 0;
@@ -276,6 +276,9 @@ def gpu_computation(image, kernels, biases, max_sizes, batches, window_sizes, st
     for batch in batches:
         offsets = comp_offsets(batch, full_image_d)
         offsets_d = gpu.to_gpu(np.int32(np.array(offsets)))
+
+        image_dims, col_dims, kernel_dims, bias_dims, sgemm_dims, out_dims, ksizes, kchannels_s = compute_dims(image, kernels, biases, max_sizes, batchsize, window_sizes, pad, stride)
+        #print image_dims, col_dims, kernel_dims, bias_dims, sgemm_dims, out_dims, ksizes, kchannels_s
         biases_d = []; bias_ps = [];
         kernels_d = []; kernel_ps = [];
         cols = []; col_ps = [];
