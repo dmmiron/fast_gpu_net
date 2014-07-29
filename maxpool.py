@@ -109,14 +109,15 @@ def get_gpu_func(module, func_name):
 
 def compute_max_batched(in_array, max_dims):
     height = in_array.shape[2]; width = in_array.shape[3]; channels = in_array.shape[1]
-    #batchsize = np.int32(in_array.shape[0])
     batchsize = in_array.shape[0]
-    print height, width, channels, batchsize
     max_height = max_dims[0]; max_width = max_dims[1]; max_channels = max_dims[2]
     out_height = (height + max_height - 1) / max_height; out_width = (width + max_width -1 ) / max_width; out_channels = (channels + max_channels -1) / max_channels;
     
     num_kernels = out_height*out_width*batchsize;
+
+    #CUDA MALLOC
     output = gpu.empty((batchsize, out_channels, out_height, out_width), np.float32);
+
     block_x = 16; block_y = 16;
     block = (block_x, block_y, 1);
     grid = (np.asscalar((out_height + block_x - 1)/block_x), np.asscalar((out_width + block_y - 1) / block_y), np.asscalar(batchsize));
@@ -133,7 +134,6 @@ def compute_max(in_array, max_dims, stream):
 
     block_xp = 8; block_yp = 8; block_zp = 2;
     block_xo = 256; block_yo = 1; block_zo = 1;
-    #block_xo = o_height; block_yo = o_width; block_zo = 2; 
 
     blockp = (block_xp, block_yp, block_zp)
     blocko = (block_xo, block_yo, block_zo)
@@ -141,7 +141,6 @@ def compute_max(in_array, max_dims, stream):
 
     kernels = o_height*o_width*o_channels
     grido = ((kernels+block_xo-1)/block_xo, 1, 1)
-    #grido = (1, 1, (kernels+block_zo-1))
 
     temp = gpu.empty((p_height, p_width, p_channels), np.float32)
 

@@ -100,9 +100,14 @@ def compute_im2col_batched(in_array, window_height, window_width, window_channel
     threads = 256 
     blocksize = (threads, 1, 1)
     gridsize = ((num_kernels+threads*batchsize -1)/(threads*batchsize), batchsize, 1)
+    
+    #CUDA MALLOC
     result = gpu.empty((batchsize, ksize*ksize*window_channels, height_col*width_col), np.float32)
+    result_ps = [result[idx, :, :].ptr for idx in range(result.shape[0])]
+    result_ps_d = gpu.to_gpu(np.array(result_ps))
+
     im2col_batched(kernels_per_batch, in_array, np.int32(height), np.int32(width), np.int32(window_channels), np.int32(ksize), np.int32(pad), np.int32(stride), height_col, width_col, offsets, np.int32(layer_n), result, block=blocksize, grid=gridsize)
-    return result
+    return result_ps_d, result
 
 
 def compute_im2col(in_array, window_height, window_width, window_channels, ksize, pad, stride, start_idx, stream):
