@@ -86,7 +86,7 @@ __global__ void im2col_gpu_kernel_batched(const int npbatch, const float* data_i
 def get_gpu_func(module, func_name):
     return nvcc.SourceModule(module).get_function(func_name)
 
-def compute_im2col_batched(in_array, window_height, window_width, window_channels, ksize, pad, stride, offsets, layer_n, batchsize):
+def compute_im2col_batched(in_array, window_height, window_width, window_channels, ksize, pad, stride, offsets, layer_n, batchsize, output):
     if (layer_n == 0):
         height = np.int32(in_array.shape[0])
         width = np.int32(in_array.shape[1])
@@ -101,14 +101,7 @@ def compute_im2col_batched(in_array, window_height, window_width, window_channel
     blocksize = (threads, 1, 1)
     gridsize = ((num_kernels+threads*batchsize -1)/(threads*batchsize), batchsize, 1)
     
-    #CUDA MALLOC
-    result = gpu.empty((batchsize, ksize*ksize*window_channels, height_col*width_col), np.float32)
-    result_ps = [result[idx, :, :].ptr for idx in range(result.shape[0])]
-    result_ps_d = gpu.to_gpu(np.array(result_ps))
-
-    im2col_batched(kernels_per_batch, in_array, np.int32(height), np.int32(width), np.int32(window_channels), np.int32(ksize), np.int32(pad), np.int32(stride), height_col, width_col, offsets, np.int32(layer_n), result, block=blocksize, grid=gridsize)
-    return result_ps_d, result
-
+    im2col_batched(kernels_per_batch, in_array, np.int32(height), np.int32(width), np.int32(window_channels), np.int32(ksize), np.int32(pad), np.int32(stride), height_col, width_col, offsets, np.int32(layer_n), output, block=blocksize, grid=gridsize)
 
 def compute_im2col(in_array, window_height, window_width, window_channels, ksize, pad, stride, start_idx, stream):
     height = np.int32(in_array.shape[0]); width = np.int32(in_array.shape[1]); 

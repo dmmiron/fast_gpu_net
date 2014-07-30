@@ -19,6 +19,7 @@ def main():
     im2col_gpu.init()
 
     batchsizes = [2**x for x in range(2, 8)]
+    batchsizes = [32]
     nstreams = 1
     streams = []
     
@@ -77,10 +78,11 @@ def main():
     print output
     print np.allclose(output[0][0], s_output, rtol=1e-04, atol=1e-07) 
     """
-    pixels = [(x, y) for x in range(32) for y in range(32)]
-    #pixels = [(x, y) for x in range(3) for y in range(3)]
 
-    num_trials = 1
+    pixels = [(x, y) for x in range(64) for y in range(64)]
+    #pixels = [(x, y) for x in range(4) for y in range(4)]
+
+    num_trials = 3
     #perform parallel computation
     for batchsize in batchsizes:
         batches = []
@@ -267,6 +269,7 @@ def compute_dims(image, kernels, biases, max_sizes, batchsize, window_sizes, pad
 
 def gpu_computation(image, kernels, biases, max_sizes, batches, window_sizes, streams):
     batchsize = len(batches[0])
+    layers = len(kernels)
     handle = cublas.cublasCreate()
     results = []
     result_ps = []
@@ -279,48 +282,29 @@ def gpu_computation(image, kernels, biases, max_sizes, batches, window_sizes, st
 
         image_dims, col_dims, kernel_dims, bias_dims, sgemm_dims, out_dims, ksizes, kchannels_s = compute_dims(image, kernels, biases, max_sizes, batchsize, window_sizes, pad, stride)
         #print image_dims, col_dims, kernel_dims, bias_dims, sgemm_dims, out_dims, ksizes, kchannels_s
+        result = gpu.empty((out_dims[layers-1][2], out_dims[layers-1][0], out_dims[layers-1][1]), np.float32)
+
         biases_d = []; bias_ps = [];
         kernels_d = []; kernel_ps = [];
         cols = []; col_ps = [];
-        image_dims = []; col_dims = []; kernel_dims = []; bias_dims = []; sgemm_dims = []; out_dims = [];
-        ksizes = []; kchannels_s = [];
+        outputs = []; output_ps = [];
         batch_biases = [];
-        height_col = 0; width_col = 0; ksize = 0; kchannels = 0; m = 0; k = 0; n = 0; out_height = 0; out_width = 0; out_channels = 0;
-        for layer_n, (bias, kernel, max_size) in enumerate(zip(biases, kernels, max_sizes)):
+        for layer_n, (bias, kernel, sgemm_dim, im_dim, out_dim, max_size, ksize, kchannels) in enumerate(zip(biases, kernels, sgemm_dims, image_dims, out_dims, max_sizes, ksizes, kchannels_s)):
+            col = gpu.empty((batchsize, sgemm_dim[1], sgemm_dim[2]), np.float32)
+            cols.append(col)
+            col_ps.append([col[idx, :, :].ptr for idx in range(col.shape[0])])
+            col_ps_d = gpu.to_gpu(np.array(col_ps))
             bias = bias.reshape(1, bias.shape[2], bias.shape[0]*bias.shape[1])
             batch_bias = np.tile(bias, (batchsize, 1, 1))
             batch_bias_d = gpu.to_gpu(batch_bias)
             biases_d.append(batch_bias_d)
-            bias_dims.append([bias.shape[1], bias.shape[2]])
             
-            ksize = kernel.shape[0]; kchannels = kernel.shape[3];
-            ksizes.append(ksize); kchannels_s.append(kchannels);
-
-            if (layer_n == 0):
-                height = window_sizes[0]; width = window_sizes[1]; channels = 1;
-            else:
-                height = out_height; width = out_width; channels = out_channels
-                
-            image_dims.append([height, width, channels]) 
-
-            height_col = (height + 2 * pad - ksize) / stride + 1
-            width_col = (width + 2 * pad - ksize) / stride + 1
-            col_dims.append([height_col, width_col])
-
-            m = kchannels; k = ksize*ksize*channels; n = height_col*width_col;
-            sgemm_dims.append([m, k, n])
-            assert(bias_dims[layer_n][0] == m)
-            assert(bias_dims[layer_n][1] == n)
-
             kernel_d = gpu.to_gpu(kernel)
-            kernel_d = kernel_d.reshape(kchannels, ksize*ksize*channels)
+            kernel_d = kernel_d.reshape(kchannels, ksize*ksize*im_dim[2])
             kernels_d.append(kernel_d)
-            kernel_dims.append([kchannels, ksize*ksize*channels])
 
-            out_height = (height_col + max_size[0] - 1) / max_size[0]
-            out_width =  (width_col + max_size[1] - 1) / max_size[1]
-            out_channels = (kchannels + max_size[2] - 1) / max_size[2]
-            out_dims.append([out_height, out_width, out_channels])
+            output = gpu.empty((batchsize, out_dim[2], out_dim[0], out_dim[1]), np.float32)
+            outputs.append(output)
 
         #duplicate the same pointer for each pixel for each layer
         kernel_ps = map(lambda x: [x.ptr]*batchsize, kernels_d)
@@ -332,16 +316,18 @@ def gpu_computation(image, kernels, biases, max_sizes, batches, window_sizes, st
 
         image_d = full_image_d
         for layer_n, (kernel_d, bias_d, im_dim, col_dim, kdim, bias_dim, sgemm_dim, out_dim, ksize, kchannels, max_size) in enumerate(zip(kernels_d, biases_d, image_dims, col_dims, kernel_dims, bias_dims, sgemm_dims, out_dims, ksizes, kchannels_s, max_sizes)):
-            col_ps = [];
             sgemm_biases = biases_d[layer_n] 
 
-            col_ps, cols = im2col_gpu.compute_im2col_batched(image_d, im_dim[0], im_dim[1], im_dim[2], np.int32(ksize), np.int32(pad), np.int32(stride), offsets_d, layer_n, batchsize)
-
-            compute_sgemm_batched(col_ps, kernel_ps_d[layer_n], bias_ps_d[layer_n], handle, sgemm_dim[0], sgemm_dim[1], sgemm_dim[2])
+            im2col_gpu.compute_im2col_batched(image_d, im_dim[0], im_dim[1], im_dim[2], np.int32(ksize), np.int32(pad), np.int32(stride), offsets_d, layer_n, batchsize, cols[layer_n])
+            compute_sgemm_batched(col_ps_d[layer_n], kernel_ps_d[layer_n], bias_ps_d[layer_n], handle, sgemm_dim[0], sgemm_dim[1], sgemm_dim[2])
             sgemm_biases = sgemm_biases.reshape(np.int32(batchsize), np.int32(kchannels), col_dim[0], col_dim[1])
-            image_d = maxpool_gpu.compute_max_batched(sgemm_biases, np.int32(max_size))
+            maxpool_gpu.compute_max_batched(sgemm_biases, outputs[layer_n], np.int32(max_size))
+            image_d = outputs[layer_n]
             
-        result_ps.append(image_d)
+        #print outputs, layers
+        result = outputs[layers-1]
+        #print result.shape
+        result_ps.append(result)
         
     cublas.cublasDestroy(handle)
     return result_ps

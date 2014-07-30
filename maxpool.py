@@ -107,7 +107,7 @@ __global__ void max_gpu_kernel_batched(const float *input, const int height, con
 def get_gpu_func(module, func_name):
     return nvcc.SourceModule(module).get_function(func_name)
 
-def compute_max_batched(in_array, max_dims):
+def compute_max_batched(in_array, output, max_dims):
     height = in_array.shape[2]; width = in_array.shape[3]; channels = in_array.shape[1]
     batchsize = in_array.shape[0]
     max_height = max_dims[0]; max_width = max_dims[1]; max_channels = max_dims[2]
@@ -115,15 +115,11 @@ def compute_max_batched(in_array, max_dims):
     
     num_kernels = out_height*out_width*batchsize;
 
-    #CUDA MALLOC
-    output = gpu.empty((batchsize, out_channels, out_height, out_width), np.float32);
-
     block_x = 16; block_y = 16;
     block = (block_x, block_y, 1);
     grid = (np.asscalar((out_height + block_x - 1)/block_x), np.asscalar((out_width + block_y - 1) / block_y), np.asscalar(batchsize));
 
     max_batched(in_array, np.int32(height), np.int32(width), np.int32(channels), np.int32(out_height), np.int32(out_width), np.int32(out_channels), np.int32(max_height), np.int32(max_width), np.int32(max_channels), np.int32(batchsize), output, block=block, grid=grid); 
-    return output
 
 def compute_max(in_array, max_dims, stream):
     p_height = np.int32((in_array.shape[0]+max_dims[0]-1)/max_dims[0])
