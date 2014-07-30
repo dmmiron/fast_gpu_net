@@ -19,15 +19,15 @@ def main():
     im2col_gpu.init()
 
     batchsizes = [2**x for x in range(2, 8)]
-    batchsizes = [32]
+    #batchsizes = [32, 64]
     nstreams = 1
     streams = []
     
     for n in range(nstreams):
         streams.append(cu.Stream())
     #set up test data
-    #image = np.float32((np.random.rand(100, 100, 1) - .5) * 2)
-    image = np.float32((np.reshape(np.arange(0, 100*100, 1), [100, 100, 1])))
+    image = np.float32((np.random.rand(1024, 1024, 1) - .5) * 2)
+    #image = np.float32((np.reshape(np.arange(0, 100*100, 1), [100, 100, 1])))
     #image = np.float32((np.reshape(np.arange(0, 10*10, 1), [10, 10, 1])))
 
     #image = np.float32(np.reshape(np.arange(0, 49*49, 1), [49, 49, 1]))
@@ -36,7 +36,6 @@ def main():
 
     #kernels_0 = np.float32((np.random.rand(4, 4, 1, 64) - .5 ) * 2)
     kernels_0 = np.float32(np.reshape(np.arange(0, 4*4*64, 1), [4, 4, 1, 64]))
-    #kernels_0 = np.float32(np.reshape(np.arange(0, 2*2*2, 1), [2, 2, 1, 2]))
     ser_kernels_0 = to_serial(kernels_0)
     bias_0 = np.float32(np.ones((46, 46, 64)))
     ser_bias_0 = to_serial(bias_0)
@@ -50,7 +49,7 @@ def main():
 
     kernels_2 = np.float32((np.random.rand(5, 5, 32, 128) - .5 ) * 2)
     ser_kernels_2 = to_serial(kernels_2)
-    bias_2 = np.float32(np.zeros((6, 6, 128)))
+    bias_2 = np.float32(np.ones((6, 6, 128)))
     ser_bias_2 = to_serial(bias_2)
     max_2 = np.int32((2, 2, 4))
     weights = np.float32(np.random.rand(2, 288))
@@ -78,11 +77,14 @@ def main():
     print output
     print np.allclose(output[0][0], s_output, rtol=1e-04, atol=1e-07) 
     """
+    valid_x = image.shape[0]-window[0]; valid_y = image.shape[1]-window[1];
 
-    pixels = [(x, y) for x in range(64) for y in range(64)]
+    #pixels = [(x, y) for x in range(valid_x) for y in range(valid_y)]
+    pixels = [(x, y) for x in range(256) for y in range(256)]
     #pixels = [(x, y) for x in range(4) for y in range(4)]
+    #batchsizes = [4]
 
-    num_trials = 3
+    num_trials = 1
     #perform parallel computation
     for batchsize in batchsizes:
         batches = []
@@ -95,9 +97,10 @@ def main():
             print "Trial {0}\n".format(i)
             #NOTE THAT OUTPUT IS A DEVICE ARRAY
             output = gpu_computation(image, kernels, biases, max_sizes, batches, window, streams)
-            
+            #print output
             #TAKE OUT SERIAL LINE WHEN TIMING
             #s_output = batch_serial(ser_image, window, ser_kernels, ser_biases, ser_max_sizes, pad, stride, batches)
+            #print output[0], s_output[0]
             #print np.allclose(output[0][0].get(), s_output[0][0], rtol=1e-04, atol=1e-07) 
             print "Time so far {0:.4e} seconds".format(time.time()-st)
         tot = time.time()-st
@@ -255,8 +258,8 @@ def compute_dims(image, kernels, biases, max_sizes, batchsize, window_sizes, pad
 
         m = kchannels; k = ksize*ksize*channels; n = height_col*width_col;
         sgemm_dims.append([m, k, n])
-        assert(bias_dims[layer_n][0] == m)
-        assert(bias_dims[layer_n][1] == n)
+        #assert(bias_dims[layer_n][0] == m)
+        #assert(bias_dims[layer_n][1] == n)
 
         kernel_dims.append([kchannels, ksize*ksize*channels])
 
@@ -265,6 +268,10 @@ def compute_dims(image, kernels, biases, max_sizes, batchsize, window_sizes, pad
         out_channels = (kchannels + max_size[2] - 1) / max_size[2]
         out_dims.append([out_height, out_width, out_channels])
     return image_dims, col_dims, kernel_dims, bias_dims, sgemm_dims, out_dims, ksizes, kchannels_s
+
+
+def preallocate():
+    return  
 
 
 def gpu_computation(image, kernels, biases, max_sizes, batches, window_sizes, streams):
@@ -276,57 +283,72 @@ def gpu_computation(image, kernels, biases, max_sizes, batches, window_sizes, st
     pad = 0; stride = 1; 
     full_image_d = gpu.to_gpu(image)
 
+    image_dims, col_dims, kernel_dims, bias_dims, sgemm_dims, out_dims, ksizes, kchannels_s = compute_dims(image, kernels, biases, max_sizes, batchsize, window_sizes, pad, stride)
+    
+    b_offsets_d = [];
+    
+    kernels_d = [];
+    cols = []; col_ps = [];
+    biases_d = [];
+    sgemm_biases = [];
+    outputs = [];
+
+    for layer_n, (bias, kernel, sgemm_dim, im_dim, out_dim, max_ksize, ksize, kchannels) in enumerate(zip(biases, kernels, sgemm_dims, image_dims, out_dims, max_sizes, ksizes, kchannels_s)):
+        col = gpu.empty((batchsize, sgemm_dim[1], sgemm_dim[2]), np.float32) 
+        cols.append(col)
+        col_ps.append([col[idx, :, :].ptr for idx in range(col.shape[0])])
+        
+        #reuse the same kernels for every pixel
+        kernel_d = gpu.to_gpu(kernel)
+        kernel_d = kernel_d.reshape(kchannels, ksize*ksize*im_dim[2])
+        kernels_d.append(kernel_d)
+
+ 
+        #contain the actual data of the biases
+        bias = bias.reshape(1, bias.shape[2], bias.shape[0]*bias.shape[1])
+        batch_bias = np.tile(bias, (batchsize, 1, 1))
+        batch_bias_d = gpu.to_gpu(batch_bias)
+        biases_d.append(batch_bias_d)
+        
+        #scratch space to copy biases to and then write output of sgemm to
+        sgemm_bias = gpu.empty(batch_bias.shape, np.float32)
+        sgemm_biases.append(sgemm_bias)
+
+        #space for output of maxpool
+        output = gpu.empty((batchsize, out_dim[2], out_dim[0], out_dim[1]), np.float32)
+        outputs.append(output)
+    col_ps_d = gpu.to_gpu(np.array(col_ps))
+
+    kernel_ps = map(lambda x: [x.ptr]*batchsize, kernels_d)
+    kernel_ps_d = gpu.to_gpu(np.array(kernel_ps))
+
+    sgemm_biases_ps = map(lambda x: [x[idx, :, :].ptr for idx in range(batchsize)], sgemm_biases)
+    sgemm_biases_ps_d = gpu.to_gpu(np.array(sgemm_biases_ps))
+
     for batch in batches:
         offsets = comp_offsets(batch, full_image_d)
         offsets_d = gpu.to_gpu(np.int32(np.array(offsets)))
+        b_offsets_d.append(offsets_d);
 
-        image_dims, col_dims, kernel_dims, bias_dims, sgemm_dims, out_dims, ksizes, kchannels_s = compute_dims(image, kernels, biases, max_sizes, batchsize, window_sizes, pad, stride)
-        #print image_dims, col_dims, kernel_dims, bias_dims, sgemm_dims, out_dims, ksizes, kchannels_s
+        #space to hold final result of each layer
         result = gpu.empty((out_dims[layers-1][2], out_dims[layers-1][0], out_dims[layers-1][1]), np.float32)
+        b_result.append(result)
 
-        biases_d = []; bias_ps = [];
-        kernels_d = []; kernel_ps = [];
-        cols = []; col_ps = [];
-        outputs = []; output_ps = [];
-        batch_biases = [];
-        for layer_n, (bias, kernel, sgemm_dim, im_dim, out_dim, max_size, ksize, kchannels) in enumerate(zip(biases, kernels, sgemm_dims, image_dims, out_dims, max_sizes, ksizes, kchannels_s)):
-            col = gpu.empty((batchsize, sgemm_dim[1], sgemm_dim[2]), np.float32)
-            cols.append(col)
-            col_ps.append([col[idx, :, :].ptr for idx in range(col.shape[0])])
-            col_ps_d = gpu.to_gpu(np.array(col_ps))
-            bias = bias.reshape(1, bias.shape[2], bias.shape[0]*bias.shape[1])
-            batch_bias = np.tile(bias, (batchsize, 1, 1))
-            batch_bias_d = gpu.to_gpu(batch_bias)
-            biases_d.append(batch_bias_d)
-            
-            kernel_d = gpu.to_gpu(kernel)
-            kernel_d = kernel_d.reshape(kchannels, ksize*ksize*im_dim[2])
-            kernels_d.append(kernel_d)
-
-            output = gpu.empty((batchsize, out_dim[2], out_dim[0], out_dim[1]), np.float32)
-            outputs.append(output)
-
-        #duplicate the same pointer for each pixel for each layer
-        kernel_ps = map(lambda x: [x.ptr]*batchsize, kernels_d)
-        kernel_ps_d = gpu.to_gpu(np.array(kernel_ps))
-        #get the pointer to each copy of bias for each layer
-        bias_p = biases_d[0].ptr
-        bias_ps = map(lambda x: [x[idx, :,:].ptr for idx in range(batchsize)] , biases_d)
-        bias_ps_d = gpu.to_gpu(np.array(bias_ps));
+    for batch, offsets_d, result in zip(batches, b_offsets_d, b_result):
 
         image_d = full_image_d
-        for layer_n, (kernel_d, bias_d, im_dim, col_dim, kdim, bias_dim, sgemm_dim, out_dim, ksize, kchannels, max_size) in enumerate(zip(kernels_d, biases_d, image_dims, col_dims, kernel_dims, bias_dims, sgemm_dims, out_dims, ksizes, kchannels_s, max_sizes)):
-            sgemm_biases = biases_d[layer_n] 
+        for layer_n, (im_dim, col_dim, kdim, bias_dim, sgemm_dim, out_dim, ksize, kchannels, max_size) in enumerate(zip(image_dims, col_dims, kernel_dims, bias_dims, sgemm_dims, out_dims, ksizes, kchannels_s, max_sizes)):
+
+            sgemm_bias = sgemm_biases[layer_n]
+            cu.memcpy_dtod(sgemm_bias.ptr, biases_d[layer_n].ptr, sgemm_bias.size)
 
             im2col_gpu.compute_im2col_batched(image_d, im_dim[0], im_dim[1], im_dim[2], np.int32(ksize), np.int32(pad), np.int32(stride), offsets_d, layer_n, batchsize, cols[layer_n])
-            compute_sgemm_batched(col_ps_d[layer_n], kernel_ps_d[layer_n], bias_ps_d[layer_n], handle, sgemm_dim[0], sgemm_dim[1], sgemm_dim[2])
-            sgemm_biases = sgemm_biases.reshape(np.int32(batchsize), np.int32(kchannels), col_dim[0], col_dim[1])
-            maxpool_gpu.compute_max_batched(sgemm_biases, outputs[layer_n], np.int32(max_size))
+            compute_sgemm_batched(col_ps_d[layer_n], kernel_ps_d[layer_n], sgemm_biases_ps_d[layer_n], handle, sgemm_dim[0], sgemm_dim[1], sgemm_dim[2])
+            sgemm_bias = sgemm_bias.reshape(np.int32(batchsize), np.int32(kchannels), col_dim[0], col_dim[1])
+            maxpool_gpu.compute_max_batched(sgemm_bias, outputs[layer_n], np.int32(max_size))
             image_d = outputs[layer_n]
             
-        #print outputs, layers
-        result = outputs[layers-1]
-        #print result.shape
+        result = outputs[layers-1].copy()
         result_ps.append(result)
         
     cublas.cublasDestroy(handle)
