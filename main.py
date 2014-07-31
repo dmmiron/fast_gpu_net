@@ -14,11 +14,10 @@ import pycuda.compiler as nvcc
 import pycuda.driver as cu
 import pycuda.gpuarray as gpu
 import pycuda.autoinit
-#from pycuda.autoinit import context
+
+import rectifier as rect
 
 model_file_name = 'berlin.pkl'
-test_weights = np.ones((5, 4))
-test_outputs = np.zeros((5, 1))
 
 def main():
     
@@ -26,20 +25,27 @@ def main():
     #image = np.float32(np.reshape(np.arange(1, 4*4+1, 1), [4, 4]))
     model = serial.load(model_file_name)
     layers = model.layers
+    #for testing only
+    layers.pop()
+    print layers
+    
     patch_dims = (39, 39)
     #patch_dims = (2, 2)
-    batchsize = 4 
-    pixels = [(x, y) for x in range(2) for y in range(2)]
+    batchsize = 100 
+    pixels = [(x, y) for x in range(10) for y in range(10)]
+    p_output = pylearn2_computation(model, image, patch_dims, batchsize, layers, pixels)
+    p_output = np.transpose(p_output)
     s_output = serial_computation(image, patch_dims, batchsize, layers, pixels)
     output = gpu_computation(image, patch_dims, batchsize, layers, pixels)
     output = output.get()
-    print output, s_output
+    print output, s_output, p_output
     #print output-s_output
-    print np.allclose(s_output, output, rtol=1e-03, atol=1e-06)
-    #print np.allclose(output[:500], s_output)
-    #print output[:500], s_output
     
-    #print s_output-output[:500]
+    print np.allclose(s_output, output, rtol=1e-04, atol=1e-07)
+    print type(p_output)
+    print np.allclose(p_output, output, rtol=1e-04, atol=1e-07)
+    print np.allclose(p_output, s_output, rtol=1e-04, atol=1e-06)
+    
     return 
 
 def load():
@@ -51,6 +57,24 @@ def compute_sgemm(weights, values, biases, handle, m, k, n):
     print m, k, n
     print values.shape, weights.shape, biases.shape
     cublas.cublasSgemm(handle, 'n', 'n', n, m, k, alpha, values.ptr, n, weights.ptr, k, beta, biases.ptr, n)
+
+def pylearn2_computation(model, image, patch_dims, batchsize, layers, pixels):
+    patchsize = patch_dims[0]*patch_dims[1]
+    model.set_batch_size(batchsize) 
+    data = model.get_input_space().make_batch_theano()
+
+    values = np.float32(np.zeros((batchsize, patchsize)))
+    for pixn, pixel in zip(range(batchsize), pixels):
+        values[pixn, :] = image[pixel[0]:pixel[0]+patch_dims[0], pixel[1]:pixel[1]+patch_dims[1]].ravel()
+    
+    for layer in model.layers:
+        y = layer.fprop(data)
+        classify = theano.function([data], [y], name='classify')
+        output = np.array(classify(values))
+        print output
+        values = output[0]
+    return values
+
 
 def serial_computation(image, patch_dims, batchsize, layers, pixels):
     patchsize = patch_dims[0]*patch_dims[1]
@@ -65,15 +89,28 @@ def serial_computation(image, patch_dims, batchsize, layers, pixels):
         result = np.float32(np.zeros((biases.shape[0], batchsize)))
         results.append(result)
 
-
     for layer_n, (weights, biases, result) in enumerate(zip(weights_l, biases_l, results)): 
         result = np.float32(np.zeros((biases.shape[0], batchsize)))
         for pixn in range(batchsize):
             result[:, pixn] = np.dot(weights, values[:, pixn]) + biases
-        values = result
+        values = ser_rect(result)
             
     return result
 
+def ser_rect(in_array):
+    for x in np.nditer(in_array, op_flags=['readwrite']):
+        if x < 0:
+            x[...] = 0
+    """for i in range(in_array.shape[0]):
+        for j in range(in_array.shape[1]):
+            if (in_array[i, j] < 0):
+                in_array[i, j] = 0"""
+    return in_array  
+
+
+def softmax(in_array):
+
+    return 
 
     
 
@@ -112,10 +149,12 @@ def gpu_computation(image, patch_dims, batchsize, layers, pixels):
         #4 for size of np.float32
         cu.memcpy_dtod(outputs.ptr, biases.ptr, outputs.size*4)
         compute_sgemm(weights, inputs, outputs, handle, weights.shape[0], weights.shape[1], batchsize) 
+        rect.compute_rectify(outputs)
         inputs = outputs
 
     cublas.cublasDestroy(handle);
     return outputs_l[-1] 
 
 if __name__ == "__main__":
+    rect.init()
     main()
