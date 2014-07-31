@@ -28,13 +28,13 @@ def main():
     layers = model.layers
     patch_dims = (39, 39)
     #patch_dims = (2, 2)
-    batchsize = 1
-    pixels = [(x, y) for x in range(1) for y in range(1)]
+    batchsize = 4 
+    pixels = [(x, y) for x in range(2) for y in range(2)]
     s_output = serial_computation(image, patch_dims, batchsize, layers, pixels)
     output = gpu_computation(image, patch_dims, batchsize, layers, pixels)
     output = output.get()
     print output, s_output
-    print output-s_output
+    #print output-s_output
     print np.allclose(s_output, output, rtol=1e-03, atol=1e-06)
     #print np.allclose(output[:500], s_output)
     #print output[:500], s_output
@@ -54,27 +54,24 @@ def compute_sgemm(weights, values, biases, handle, m, k, n):
 
 def serial_computation(image, patch_dims, batchsize, layers, pixels):
     patchsize = patch_dims[0]*patch_dims[1]
-    values = []; weights_l = []; biases_l = []; 
-    for pixel in pixels:
-        values.append(image[pixel[0]:pixel[0]+patch_dims[0], pixel[1]:pixel[1]+patch_dims[1]].ravel())
+    weights_l = []; biases_l = []; results = []; 
+    values = np.float32(np.zeros((patchsize, batchsize)))
+    for pixn, pixel in zip(range(batchsize), pixels):
+        values[:, pixn] = image[pixel[0]:pixel[0]+patch_dims[0], pixel[1]:pixel[1]+patch_dims[1]].ravel()
     for layer in layers:
         weights_l.append(np.transpose(layer.get_weights()))
-        biases_l.append(layer.b.get_value())
-    #print weights_l, biases_l, values
-    #print weights_l[0], "serial"
-    #print biases_l[0], "serial biases"
-    #print values[0], "serial values"
-    result = np.float32(np.zeros((biases_l[0].shape[0], batchsize)))
-    for pixn, patch in enumerate(values):
-        units = patch
-        for layer_n, (weights, biases) in enumerate(zip([weights_l[0]], [biases_l[0]])): 
-            #weights = np.zeros((5, len(patch)))
-            #weights[0][1] = 1
-            #weights = np.float32(np.reshape(np.arange(0, 5*patch_dims[0]*patch_dims[1], 1), [5, patch_dims[0]*patch_dims[1]]))
+        biases = layer.b.get_value()
+        biases_l.append(biases)
+        result = np.float32(np.zeros((biases.shape[0], batchsize)))
+        results.append(result)
 
-            result[:, pixn] = np.dot(weights, units)
-            #+ biases
-            #in here for testing first layer only
+
+    for layer_n, (weights, biases, result) in enumerate(zip(weights_l, biases_l, results)): 
+        result = np.float32(np.zeros((biases.shape[0], batchsize)))
+        for pixn in range(batchsize):
+            result[:, pixn] = np.dot(weights, values[:, pixn]) + biases
+        values = result
+            
     return result
 
 
@@ -84,23 +81,23 @@ def gpu_computation(image, patch_dims, batchsize, layers, pixels):
     handle = cublas.cublasCreate() 
     image_d = gpu.to_gpu(image)
     patchsize = patch_dims[0]*patch_dims[1]
-
-    values_ps = []; bias_ps = []; output_ps = [];
-
-    weights = layers[0].get_weights(); biases = np.float32(layers[0].b.get_value());
-    weights = np.ascontiguousarray(np.transpose(weights))
-
-    #weights = np.float32(np.ones((5, patch_dims[0]*patch_dims[1])))
-    #weights[1][0] = 0
-    #weights = np.float32(test_weights)
-
-    weights_d = gpu.to_gpu(np.float32(weights))
-    #we use the same weights for all of the pixels
     
-    outputs = np.float32(np.zeros((len(biases), batchsize)))
-    #outputs = np.float32(test_outputs)
-    #outputs = np.float32(np.zeros((5, batchsize)))
-    outputs_d = gpu.to_gpu(outputs)
+    weights_l = []; biases_l = []; outputs_l = [];
+    for layer in layers:
+        weights = layer.get_weights(); biases = np.float32(layer.b.get_value());
+        weights = np.ascontiguousarray(np.transpose(weights))
+        #to prevent tiling from prepending the dimension
+        biases = biases.reshape([len(biases), 1])
+        batch_biases = np.tile(biases, (1, batchsize))
+
+        #we use the same weights for all of the pixels
+        weights_d = gpu.to_gpu(np.float32(weights))
+        batch_biases_d = gpu.to_gpu(np.float32(batch_biases))
+        weights_l.append(weights_d); biases_l.append(batch_biases_d)
+        
+        #scratch space to copy biases to for each layer
+        outputs = gpu.empty((len(biases), batchsize), np.float32)
+        outputs_l.append(outputs)
 
     values = np.float32(np.zeros((patchsize, batchsize)))
     for pixn, pixel in zip(range(batchsize), pixels):
@@ -108,13 +105,17 @@ def gpu_computation(image, patch_dims, batchsize, layers, pixels):
         values[:, pixn] = image[pixel[0]:pixel[0]+patch_dims[0], pixel[1]:pixel[1]+patch_dims[1]].ravel()
     
     values_d = gpu.to_gpu(np.float32(values))
-    #print weights_d, weights_d.shape
-
-    #print weights_d, values_d, "GPU"
-    compute_sgemm(weights_d, values_d, outputs_d, handle, weights.shape[0], weights.shape[1], batchsize) 
+    inputs = values_d
+    
+    #print weights_l, biases_l, outputs_l
+    for layern, (weights, biases, outputs) in enumerate(zip(weights_l, biases_l, outputs_l)):
+        #4 for size of np.float32
+        cu.memcpy_dtod(outputs.ptr, biases.ptr, outputs.size*4)
+        compute_sgemm(weights, inputs, outputs, handle, weights.shape[0], weights.shape[1], batchsize) 
+        inputs = outputs
 
     cublas.cublasDestroy(handle);
-    return outputs_d 
+    return outputs_l[-1] 
 
 if __name__ == "__main__":
     main()
