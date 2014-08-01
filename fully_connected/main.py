@@ -9,6 +9,9 @@ import numpy as np
 import theano
 import theano.tensor as T
 
+import glob
+import math
+
 import scikits.cuda.cublas as cublas
 import pycuda.compiler as nvcc
 import pycuda.driver as cu
@@ -20,6 +23,38 @@ import soft_max as soft_max
 
 model_file_name = 'berlin.pkl'
 
+def load_image(image_name):
+    print image_name
+    image = np.float32(mahotas.imread(image_name))
+    image /= 255
+    return image
+
+def save_image(image, out_name):
+    print image
+    mahotas.imsave(out_name, np.int8(image*255))
+
+def classify_image(image, model):
+    layers = model.layers
+    patch_dims = (39, 39)
+    valid_x = image.shape[0]-patch_dims[0]
+    valid_y = image.shape[1]-patch_dims[1]
+    batchsize = 512
+    pixels = [(x,y) for x in range(valid_x) for y in range(valid_y)]
+    print image
+    output = gpu_computation(image, patch_dims, batchsize, layers, pixels)
+    output = output.get()
+    output = output.reshape(valid_x, valid_y)
+    return output
+
+def classify(image_names, model_file_name, output_names):
+    model = serial.load(model_file_name)
+    outputs = []
+    for image_name, output_name in zip(image_names, output_names):
+        image = load_image(image_name)
+        output = classify_image(image, model)
+        print np.where(np.isnan(output))[0].shape
+        save_image(np.int32(np.round(output)), output_name)
+
 def main():
     
     image = np.float32((np.random.rand(1024, 1024) - .5) * 2)
@@ -30,11 +65,13 @@ def main():
     #layers.pop()
     
     patch_dims = (39, 39)
-    #patch_dims = (2, 2)
     batchsizes = [2**x for x in range(7, 10)] 
+    #batchsizes = [128]
     pixels = [(x, y) for x in range(1024-39) for y in range(1024-39)]
-    #p_output = pylearn2_computation(model, image, patch_dims, batchsize, layers, pixels)
+    #pixels = [(x,y) for x in range(128) for y in range(128)]
+    #p_output = pylearn2_computation(model, image, patch_dims, batchsizes[0], layers, pixels)
     #p_output = np.transpose(p_output)
+    #save_image(np.int8(np.round(p_output[0].reshape(128, 128))), "test_pylearn2.tif")
     #s_output = serial_computation(image, patch_dims, batchsize, layers, pixels)
     for batchsize in batchsizes:
         st = time.time()
@@ -44,6 +81,8 @@ def main():
         print "Batchsize {0}".format(batchsize)
         print "Total time: {0:.4e} seconds".format(tot)
         print "Time per pixel: {0:.4e} seconds".format(tot/len(pixels))
+    output = output.reshape(1024-39, 1024-39)
+    save_image(np.int8(np.round(output)), "test_out.tif")
     #print output, p_output
     #print output.shape, s_output.shape, p_output.shape
     
@@ -182,4 +221,15 @@ def gpu_computation(image, patch_dims, batchsize, layers, pixels):
 if __name__ == "__main__":
     rect.init()
     soft_max.init()
-    main()
+    #main()
+
+    if len(sys.argv) != 3:
+        print "Usage: python main.py <image_folder> <model_file>"
+        sys.exit()
+    image_path = sys.argv[1]
+    model_file_name = sys.argv[2]
+    images = sorted(glob.glob(image_path + "/*"))[0:10]
+    output_path = "/home/dmmiron/cuda/fast_gpu_net/fully_connected/"
+    output_names = [output_path + image_name.split("/")[-1].rstrip(".tif") + "_classified.tif" for image_name in images]
+    classify(images, model_file_name, output_names)
+

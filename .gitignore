@@ -1,0 +1,8 @@
+*.tif
+*.pyc
+*~
+*.pkl
+useful_dnn_stuff.py
+output
+classifyImage_pylearn2.py
+generateTrainValTestData.py
