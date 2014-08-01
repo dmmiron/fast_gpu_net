@@ -16,17 +16,18 @@ import pycuda.gpuarray as gpu
 import pycuda.autoinit
 
 import rectifier as rect
+import soft_max as soft_max
 
 model_file_name = 'berlin.pkl'
 
 def main():
     
-    image = np.float32((np.random.rand(1024, 1024) - .5) * 100)
+    image = np.float32((np.random.rand(1024, 1024) - .5) * 2)
     #image = np.float32(np.reshape(np.arange(1, 4*4+1, 1), [4, 4]))
     model = serial.load(model_file_name)
     layers = model.layers
     #for testing only
-    layers.pop()
+    #layers.pop()
     print layers
     
     patch_dims = (39, 39)
@@ -38,12 +39,11 @@ def main():
     s_output = serial_computation(image, patch_dims, batchsize, layers, pixels)
     output = gpu_computation(image, patch_dims, batchsize, layers, pixels)
     output = output.get()
-    print output, s_output, p_output
-    #print output-s_output
+    print output, p_output
+    #print output, s_output, p_output
     
     print np.allclose(s_output, output, rtol=1e-04, atol=1e-07)
-    print type(p_output)
-    print np.allclose(p_output, output, rtol=1e-04, atol=1e-07)
+    print np.allclose(p_output[0], output, rtol=1e-04, atol=1e-07)
     print np.allclose(p_output, s_output, rtol=1e-04, atol=1e-06)
     
     return 
@@ -71,7 +71,7 @@ def pylearn2_computation(model, image, patch_dims, batchsize, layers, pixels):
         y = layer.fprop(data)
         classify = theano.function([data], [y], name='classify')
         output = np.array(classify(values))
-        print output
+        print output.shape, "pylearn2"
         values = output[0]
     return values
 
@@ -122,6 +122,7 @@ def gpu_computation(image, patch_dims, batchsize, layers, pixels):
     weights_l = []; biases_l = []; outputs_l = [];
     for layer in layers:
         weights = layer.get_weights(); biases = np.float32(layer.b.get_value());
+        print weights.shape, layer, "gpu"
         weights = np.ascontiguousarray(np.transpose(weights))
         #to prevent tiling from prepending the dimension
         biases = biases.reshape([len(biases), 1])
@@ -134,7 +135,10 @@ def gpu_computation(image, patch_dims, batchsize, layers, pixels):
         
         #scratch space to copy biases to for each layer
         outputs = gpu.empty((len(biases), batchsize), np.float32)
+        print outputs.shape, layer
         outputs_l.append(outputs)
+    #final output
+    classes = gpu.empty(batchsize, np.float32)
 
     values = np.float32(np.zeros((patchsize, batchsize)))
     for pixn, pixel in zip(range(batchsize), pixels):
@@ -149,12 +153,16 @@ def gpu_computation(image, patch_dims, batchsize, layers, pixels):
         #4 for size of np.float32
         cu.memcpy_dtod(outputs.ptr, biases.ptr, outputs.size*4)
         compute_sgemm(weights, inputs, outputs, handle, weights.shape[0], weights.shape[1], batchsize) 
-        rect.compute_rectify(outputs)
-        inputs = outputs
+        if (layern < len(layers)-1):
+            rect.compute_rectify(outputs)
+            inputs = outputs
+        else:
+            soft_max.compute_soft_max(outputs, classes)
 
     cublas.cublasDestroy(handle);
-    return outputs_l[-1] 
+    return classes 
 
 if __name__ == "__main__":
     rect.init()
+    soft_max.init()
     main()
