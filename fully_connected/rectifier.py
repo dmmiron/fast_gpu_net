@@ -26,7 +26,6 @@ def get_gpu_func(module, func_name):
 def compute_rectify(in_array):
     threads = 128;
     num_kernels = in_array.size
-    print num_kernels
     blocksize = (threads, 1, 1)
     gridsize = ((num_kernels+threads-1)/threads, 1, 1)
 

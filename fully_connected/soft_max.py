@@ -10,14 +10,12 @@ global soft_max
 
 soft_max_kernel = """
 #include <stdio.h>
-__global__ void soft_max_gpu(const float *input, int pixels, float *output) {
+__global__ void soft_max_gpu(const float *input, int pixels, int out_offset, float *output) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    output += out_offset;
     if (idx < pixels) {
-        //float num = expf(input[idx*2]);
         float num = expf(input[idx]);
-        //float den = num + expf(input[idx*2+1]);
         float den = num + expf(input[idx+pixels]);
-        //printf("%f num, %f den, %d idx, %f input\\n", num, den, idx, input[idx]);
         output[idx] = num/den;
     }
 }
@@ -26,13 +24,12 @@ __global__ void soft_max_gpu(const float *input, int pixels, float *output) {
 def get_gpu_func(module, func_name):
     return nvcc.SourceModule(module).get_function(func_name)
 
-def compute_soft_max(in_array, output):
+def compute_soft_max(in_array, output, offset=0):
     threads = 128;
-    num_kernels = output.size
+    num_kernels = in_array.shape[1]
     blocksize = (threads, 1, 1)
     gridsize = ((num_kernels+threads-1)/threads, 1, 1)
-    print num_kernels, in_array.shape, output.shape
-    soft_max(in_array, np.int32(num_kernels), output, block=blocksize, grid=gridsize) 
+    soft_max(in_array, np.int32(num_kernels), np.int32(offset), output, block=blocksize, grid=gridsize) 
     return
 
 def init():
