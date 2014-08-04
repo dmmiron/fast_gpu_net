@@ -20,11 +20,15 @@ import pycuda.autoinit
 
 import rectifier as rect
 import soft_max as soft_max
+import im2col as im2col
 
 model_file_name = 'berlin.pkl'
 #initialize kernels on import
 rect.init()
 soft_max.init()
+im2col.init()
+
+time_starts = []; time_ends = []; sgemm_gflop = 0;
  
 
 def load_image(image_name):
@@ -36,15 +40,19 @@ def save_image(image, out_name):
     mahotas.imsave(out_name, np.int8(image*255))
 
 def classify_image(image, model):
+    st = time.time()
     layers = model.layers
     patch_dims = (39, 39)
-    valid_x = image.shape[0]-patch_dims[0]
-    valid_y = image.shape[1]-patch_dims[1]
-    batchsize = 512
+    valid_x = image.shape[0]-patch_dims[0] + 1
+    valid_y = image.shape[1]-patch_dims[1] + 1
+    #batchsize = 512
+    batch_rows = 16 
+    batchsize = valid_x*batch_rows
     pixels = [(x,y) for x in range(valid_x) for y in range(valid_y)]
-    output = gpu_computation(image, patch_dims, batchsize, layers, pixels)
+    output = gpu_computation(image, patch_dims, batchsize, batch_rows, layers, pixels)
     output = output.get()
     output = output.reshape(valid_x, valid_y)
+    print "Classified image in: {0:.4e} seconds", time.time()-st
     return output
 
 def classify(image_names, model_file_name, output_names):
@@ -58,31 +66,50 @@ def classify(image_names, model_file_name, output_names):
 def main():
     
     image = np.float32((np.random.rand(1024, 1024) - .5) * 2)
-    #image = np.float32(np.reshape(np.arange(1, 4*4+1, 1), [4, 4]))
+    #image = np.float32(np.reshape(np.arange(1, 5*5+1, 1), [5, 5]))
+    #image = np.float32((np.random.rand(5, 5) - .5) * 2)
     model = serial.load(model_file_name)
     layers = model.layers
     #for testing only
     #layers.pop()
     
     patch_dims = (39, 39)
-    batchsizes = [2**x for x in range(7, 10)] 
-    batchsizes = [128]
-    pixels = [(x, y) for x in range(1024-39) for y in range(1024-39)]
+    #patch_dims = (2, 2)
+    #batchsizes = [2**x for x in range(7, 14)] 
+    #batchsizes = [512]
+    batch_rows_l = [2**x for x in range(2, 5)]
+    #batch_rows_l = [2]
+    #batchsizes = [512]
+    batchsizes = map(lambda x: x*(1024-39+1), batch_rows_l)
+    #batchsizes = map(lambda x: x*(5-2+1), batch_rows_l)
+    pixels = [(x, y) for x in range(1024-39+1) for y in range(1024-39+1)]
+    #pixels = [(x, y) for x in range(4) for y in range(4)]
+    
     #pixels = [(x,y) for x in range(128) for y in range(128)]
     #p_output = pylearn2_computation(model, image, patch_dims, batchsizes[0], layers, pixels)
     #p_output = np.transpose(p_output)
     #save_image(np.int8(np.round(p_output[0].reshape(128, 128))), "test_pylearn2.tif")
     #s_output = serial_computation(image, patch_dims, batchsize, layers, pixels)
-    for batchsize in batchsizes:
+    num_trials = 3
+    for batchsize, batch_rows in zip(batchsizes, batch_rows_l):
         st = time.time()
-        output = gpu_computation(image, patch_dims, batchsize, layers, pixels)
-        output = output.get()
+        for trial in range(num_trials):
+            output = gpu_computation(image, patch_dims, batchsize, batch_rows, layers, pixels)
+            output = output.get()
         tot = time.time()-st
         print "Batchsize {0}".format(batchsize)
         print "Total time: {0:.4e} seconds".format(tot)
-        print "Time per pixel: {0:.4e} seconds".format(tot/len(pixels))
-    output = output.reshape(1024-39, 1024-39)
-    save_image(np.int8(np.round(output)), "test_out.tif")
+        print "Time per pixel: {0:.4e} seconds".format(tot/len(pixels*num_trials))
+        print "Pixels per second: {0:.4e}".format(len(pixels*num_trials)/tot)
+    for end in time_ends:
+        end.synchronize()
+    sgemm_times = map(lambda start, end: end.time_since(start)/1000, time_starts, time_ends)
+    tot_sgemm_time = sum(sgemm_times)
+    print "Total sgemm time: {0:.4e} seconds\nTotal gflop: {1:.4e}\nGflop per sec: {2:.4e}".format(tot_sgemm_time, sgemm_gflop, sgemm_gflop/tot_sgemm_time)
+    print time_ends[0].time_since(time_starts[0])/1000    
+    print time_ends[1].time_since(time_starts[1])/1000    
+    #output = output.reshape(1024-39, 1024-39)
+    #save_image(np.int8(np.round(output)), "test_out.tif")
     #print output, p_output
     #print output.shape, s_output.shape, p_output.shape
     
@@ -100,7 +127,19 @@ def compute_sgemm(weights, values, biases, handle, m, k, n):
     #to do C = A*B + C, we actually do C_t = B_t*A_t + C_t and then transpose, but the transposing is all done implicitly in copy to and from gpu, so we just note that we do BA not AB
     #print m, k, n
     #print values.shape, weights.shape, biases.shape
+    flop = float(2*m*n*k)
+    gflop = flop/10**9
+
+    start = cu.Event()
+    end = cu.Event()
+    start.record()
     cublas.cublasSgemm(handle, 'n', 'n', n, m, k, alpha, values.ptr, n, weights.ptr, k, beta, biases.ptr, n)
+    end.record()
+    global time_starts
+    global time_ends
+    global sgemm_gflop
+    time_starts.append(start); time_ends.append(end);
+    sgemm_gflop += gflop
 
 def pylearn2_computation(model, image, patch_dims, batchsize, layers, pixels):
     patchsize = patch_dims[0]*patch_dims[1]
@@ -159,9 +198,7 @@ def softmax(in_array):
 
     return 
 
-    
-
-def gpu_computation(image, patch_dims, batchsize, layers, pixels):
+def gpu_computation(image, patch_dims, batchsize, batch_rows, layers, pixels):
     handle = cublas.cublasCreate() 
     image_d = gpu.to_gpu(image)
     patchsize = patch_dims[0]*patch_dims[1]
@@ -188,7 +225,10 @@ def gpu_computation(image, patch_dims, batchsize, layers, pixels):
     #final output
     classes = gpu.empty(npixels, np.float32)
     values_d_l = []
+    #THIS IS BOTTLENECK-reduce number of copies
+    """ 
     for batch in range(nbatches): 
+    #for batch in range(1):
         values = np.zeros((patchsize, batchsize), np.float32)
         start = batch*batchsize
         for pixn, pixel in zip(range(batchsize), pixels[start:start+batchsize]):
@@ -196,13 +236,13 @@ def gpu_computation(image, patch_dims, batchsize, layers, pixels):
     
         values_d = gpu.to_gpu(np.float32(values))
         values_d_l.append(values_d)
-
-    for (batch, values_d) in zip(range(nbatches), values_d_l):
-        inputs = values_d
-        #print inputs
+    """ 
+    window = (patch_dims[0]+batch_rows-1, image_d.shape[1], 1)
+    #for (batch, values_d) in zip(range(nbatches), values_d_l):
+    for batch in range(nbatches):
+        image_offset = batch*batch_rows*image_d.shape[0]
+        inputs = im2col.compute_im2col(image_d, window[0], window[1], window[2], patch_dims[1], 0, 1, image_offset)
         offset = batch*batchsize 
-
-        #print weights_l, biases_l, outputs_l
         for layern, (weights, biases, outputs) in enumerate(zip(weights_l, biases_l, outputs_l)):
             #4 for size of np.float32
             cu.memcpy_dtod(outputs.ptr, biases.ptr, outputs.size*4)
@@ -211,9 +251,7 @@ def gpu_computation(image, patch_dims, batchsize, layers, pixels):
                 rect.compute_rectify(outputs)
                 inputs = outputs
             else:
-                #print outputs
                 soft_max.compute_soft_max(outputs, classes, offset)
-                #print classes
     
     cublas.cublasDestroy(handle);
     return classes 
@@ -222,7 +260,7 @@ if __name__ == "__main__":
     main()
     sys.exit()
 
-    if len(sys.argv) != 3:
+    if len(sys.argv) != 4:
         print "Usage: python main.py <image_folder> <output_folder> <model_file>"
         sys.exit()
     image_path = sys.argv[1]
