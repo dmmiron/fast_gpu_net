@@ -103,7 +103,7 @@ def compute_im2col_batched(in_array, window_height, window_width, window_channel
     
     im2col_batched(kernels_per_batch, in_array, np.int32(height), np.int32(width), np.int32(window_channels), np.int32(ksize), np.int32(pad), np.int32(stride), height_col, width_col, offsets, np.int32(layer_n), output, block=blocksize, grid=gridsize)
 
-def compute_im2col(in_array, window_height, window_width, window_channels, ksize, pad, stride, start_idx):
+def compute_im2col(in_array, window_height, window_width, window_channels, ksize, pad, stride, start_idx, output):
     height = np.int32(in_array.shape[0]); width = np.int32(in_array.shape[1]); 
     height_col = np.int32((window_height + 2 * pad - ksize) / stride + 1)
     width_col = np.int32((window_width + 2 * pad - ksize) / stride + 1)
@@ -111,17 +111,8 @@ def compute_im2col(in_array, window_height, window_width, window_channels, ksize
     threads = 256 
     blocksize = (threads, 1, 1)
     gridsize = ((num_kernels+threads -1)/threads, 1, 1)
-    result = gpu.empty((ksize*ksize*window_channels, height_col*width_col), np.float32)
 
-    #start = cu.Event()
-    #end = cu.Event()
-    #start.record()
-    #im2col(num_kernels, in_array, np.int32(height), np.int32(width), np.int32(ksize), np.int32(pad), np.int32(stride), height_col, width_col, np.int32(start_idx), result, block=blocksize, grid=gridsize)
-    im2col(num_kernels, in_array, np.int32(height), np.int32(width), np.int32(ksize), np.int32(pad), np.int32(stride), height_col, width_col, np.int32(start_idx), result, block=blocksize, grid=gridsize)
-    #end.record()
-    #end.synchronize()
-    #print "im2col took: {0:.4e} seconds".format(end.time_since(start)/1000)
-    return result
+    im2col(num_kernels, in_array, np.int32(height), np.int32(width), np.int32(ksize), np.int32(pad), np.int32(stride), height_col, width_col, np.int32(start_idx), output, block=blocksize, grid=gridsize)
 
 def init():
     global im2col
