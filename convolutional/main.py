@@ -1,9 +1,17 @@
 #!/usr/bin/env python
+from pylearn2.utils import serial
+from pylearn2.config import yaml_parse
 import sys
 import numpy as np
 import time
+import glob
+import mahotas
 import im2col as im2col_gpu
 import maxpool as maxpool_gpu
+import soft_max as soft_max
+import theano
+import theano.tensor as T
+from theano.sandbox.cuda import dimshuffle as cuda_dimshuffle
 
 import scikits.cuda.cublas as cublas
 import pycuda.compiler as nvcc
@@ -13,6 +21,94 @@ import pycuda.autoinit
 
 from scipy.signal import convolve
 
+im2col_gpu.init()
+maxpool_gpu.init()
+soft_max.init()
+
+def normalize_image_float(original_image, saturation_level=0.005):
+    sorted_image = np.sort( np.uint8(original_image).ravel() )
+    minval = np.float32( sorted_image[ len(sorted_image) * ( saturation_level / 2 ) ] )
+    maxval = np.float32( sorted_image[ len(sorted_image) * ( 1 - saturation_level / 2 ) ] )
+    norm_image = np.float32(original_image - minval) * ( 255 / (maxval - minval))
+    norm_image[norm_image < 0] = 0
+    norm_image[norm_image > 255] = 255
+    return norm_image / 255.0
+
+def load_image(image_name):
+    image = np.float32(mahotas.imread(image_name))
+    image = normalize_image_float(image)
+    return image
+
+def save_image(image, out_name):
+    #assumes image is normalized float from 0 to 1
+    mahotas.imsave(out_name, np.int8(image))
+
+def classify_image(image, model, handle):
+    st = time.time()
+    layers = model.layers
+    convs = layers[:-1]; softmax = layers[-1];
+    convs = map(lambda layer: layer.get_params(), convs)
+    
+    kernels = map(lambda layer: np.array(layer[0].eval()), convs)
+
+    kernels = map(lambda kernel: np.ascontiguousarray(np.rollaxis(kernel, 0, 3)[::1, ::1, :, :]), kernels)
+    kdims = map(lambda kernel: kernel.shape, kernels)
+    kernels = map(lambda layer: layer[0].dimshuffle(3, 0, 1, 2).eval(), convs)
+    kernels = map(lambda kernel, kdim: kernel.reshape(kdim), kernels, kdims)
+    
+    
+    biases = map(lambda layer: np.array(layer[1].eval()), convs)
+    bias_dims = map(lambda bias: bias.shape, biases)
+    max_sizes = map(lambda layer: layer.pool_shape + [layer.num_pieces], layers[:-1])
+    soft_weights = softmax.get_params()[1].reshape((2, 3, 3, 32)).dimshuffle(0, 3, 1, 2).eval()
+    soft_weights = np.ascontiguousarray(np.reshape(soft_weights, (288, 2)))
+    soft_bias = softmax.get_params()[0].get_value()
+
+    window = layers[0].input_space.shape
+
+    valid_x = image.shape[0]-window[0] + 1
+    valid_y = image.shape[1]-window[1] + 1
+    #batchsize = 16 
+    batchsize = 64
+    #batchsize = 1 
+    pixels = [(x,y) for x in range(valid_x) for y in range(valid_y)]
+    batches = []
+    for i in range(len(pixels)/batchsize):
+        start = i*batchsize
+        batches.append(pixels[start:start+batchsize])
+
+    
+    p_output = pylearn2_computation(model, image, window, batchsize, layers, pixels)
+    #print "before soft_max layer"
+    #print p_layer3, "mark3"
+    p_layer4 = p_output[3][0]
+    #print p_layer4, "mark4"
+    
+    output = gpu_computation(image, kernels, biases, max_sizes, soft_weights, soft_bias, batches, window)
+    output = output.get()
+    output = output.reshape(valid_x, valid_y)
+    #print output
+    print "Classified image in: {0:.4e} seconds", time.time()-st
+    return output
+
+def classify(image_names, model_file_name, output_names):
+    """Classify a set of images using the given model.
+    
+    Arguments:
+    image_names -- an iterable of strings with the names of the input images
+    model_file_name -- string
+    output_names -- an iterable of strings with the names of the output images
+    image_names and output_names should have the same length and indices match. i.e. image_names[idx] -> output_names[idx]
+    """
+    handle = cublas.cublasCreate()
+    model = serial.load(model_file_name)
+    outputs = []
+    for image_name, output_name in zip(image_names, output_names):
+        image = load_image(image_name)
+        output = classify_image(image, model, handle)
+        save_image(np.int32(np.round(output*255)), output_name)
+    cublas.cublasDestroy(handle)
+
 def main():
     #compile gpu kernels
     maxpool_gpu.init()
@@ -20,11 +116,9 @@ def main():
 
     #batchsizes = [2**x for x in range(2, 8)]
     batchsizes = [32, 64, 128]
-    nstreams = 1
-    streams = []
+    batchsizes = [64]
+
     
-    for n in range(nstreams):
-        streams.append(cu.Stream())
     #set up test data
     image = np.float32((np.random.rand(1024, 1024, 1) - .5) * 2)
     #image = np.float32((np.reshape(np.arange(0, 100*100, 1), [100, 100, 1])))
@@ -36,24 +130,27 @@ def main():
 
     #kernels_0 = np.float32((np.random.rand(4, 4, 1, 64) - .5 ) * 2)
     kernels_0 = np.float32(np.reshape(np.arange(0, 4*4*64, 1), [4, 4, 1, 64]))
-    kernels_0 = np.float32(np.ones((4, 4, 1, 64)))
+    #kernels_0 = np.float32(np.ones((4, 4, 1, 64)))/1000
+    kernels_0 = np.float32((np.random.rand(4, 4, 1, 64) - .5) * 2) / 10
     ser_kernels_0 = to_serial(kernels_0)
     bias_0 = np.float32(np.zeros((46, 46, 64)))
     ser_bias_0 = to_serial(bias_0)
     max_0 = np.int32((2, 2, 2))
 
-    kernels_1 = np.float32((np.random.rand(4, 4, 32, 64) - .5 ) * 2)
+    kernels_1 = np.float32((np.random.rand(4, 4, 32, 64) - .5 ) * 2)/10
     ser_kernels_1 = to_serial(kernels_1)
     bias_1 = np.float32(np.zeros((20, 20, 64)))
     ser_bias_1 = to_serial(bias_1)
     max_1 = np.int32((2, 2, 2))
 
-    kernels_2 = np.float32((np.random.rand(5, 5, 32, 128) - .5 ) * 2)
+    kernels_2 = np.float32((np.random.rand(5, 5, 32, 128) - .5 ) * 2)/10
     ser_kernels_2 = to_serial(kernels_2)
     bias_2 = np.float32(np.zeros((6, 6, 128)))
     ser_bias_2 = to_serial(bias_2)
     max_2 = np.int32((2, 2, 4))
-    weights = np.float32(np.random.rand(2, 288))
+    soft_weights = np.float32(((np.random.rand(288, 2)) - .5) * 2) / 10
+    soft_bias = np.float32(np.random.rand(2))
+    soft_bias = np.zeros((2))
 
     pad = np.int32(0)
     stride = np.int32(1)
@@ -79,28 +176,36 @@ def main():
     #max_sizes = [max_0]
     ser_max_sizes = map(to_serial, max_sizes)
 
-    """ 
+     
     #perform serial computation
-    s_output = serial(ser_image, window, ser_kernels, ser_biases, ser_max_sizes, pad, stride)
-    out_max = from_serial(s_output)
+    #s_output = comp_serial(ser_image, window, ser_kernels, ser_biases, ser_max_sizes, pad, stride)
+    #out_max = from_serial(s_output)
 
-    #when using actual images will need to offset pixels so they are the center of the window
-    batchsize = 2
-    pixels = [(0, 0), (1, 0)]
-    output = gpu_computation(image, kernels, biases, max_sizes, [pixels], window, streams)
-    print output
-    print np.allclose(output[0][0], s_output, rtol=1e-04, atol=1e-07) 
+    #pixels = [(x, y) for x in range(16) for y in range(16)]
+    num_trials = 1
     """
+    #when using actual images will need to offset pixels so they are the center of the window
+    #batchsize = 2
+    #pixels = [(0, 0), (1, 0)]
+    st = time.time()
+    for i in range(num_trials):
+        output = gpu_computation(image, kernels, biases, max_sizes, [pixels], window)
+    tot = time.time()-st
+    print "Serial took: {0:.4e} seconds".format(tot/num_trials)
+    print "Serial time per pixel: {0:.4e}".format(tot/(num_trials*npixels))
+    #print output
+    #print np.allclose(output[0][0], s_output, rtol=1e-04, atol=1e-07) 
+    """ 
     valid_x = image.shape[0]-window[0]; valid_y = image.shape[1]-window[1];
 
-    pixels = [(x, y) for x in range(valid_x) for y in range(valid_y)]
-    #pixels = [(x, y) for x in range(256) for y in range(256)]
-    #pixels = [(x, y) for x in range(2) for y in range(2)]
+    #pixels = [(x, y) for x in range(valid_x) for y in range(valid_y)]
+    pixels = [(x, y) for x in range(4) for y in range(4)]
     #print pixels
-    #batchsizes = [4]
-
-    num_trials = 1
+    npixels = len(pixels)
+    batchsizes = [4]
+     
     #perform parallel computation
+    
     for batchsize in batchsizes:
         batches = []
         for i in range(len(pixels)/batchsize):
@@ -111,15 +216,38 @@ def main():
         for i in range(num_trials):
             print "Trial {0}\n".format(i)
             #NOTE THAT OUTPUT IS A DEVICE ARRAY
-            output = gpu_computation(image, kernels, biases, max_sizes, batches, window, streams)
-            #print output
+            output = gpu_computation(image, kernels, biases, max_sizes, soft_weights, soft_bias, batches, window)
+            print output.get()
             #TAKE OUT SERIAL LINE WHEN TIMING
             #s_output = batch_serial(ser_image, window, ser_kernels, ser_biases, ser_max_sizes, pad, stride, batches)
             #comp_results(output, s_output)
-            print "Time so far {0:.4e} seconds".format(time.time()-st)
+            #print "Time so far {0:.4e} seconds".format(time.time()-st)
         tot = time.time()-st
         print "Total time: {0:.4e} seconds".format(tot)
-        print "Time per pixel {0:.4e} seconds".format(tot/(len(batches)*batchsize*num_trials))
+        print "Time per pixel {0:.4e} seconds".format(tot/(npixels*num_trials))
+        print "Pixels per second {0:.4e}".format(npixels*num_trials/tot)
+    
+    """ 
+    for batchsize in batchsizes:
+        batches = []
+        for i in range(len(pixels)/batchsize):
+            start = i*batchsize
+            batches.append(pixels[start:start+batchsize])
+        print "Batchsize: {0}\nBatches: {1}\nPixels: {2}\n".format(batchsize, len(batches), batchsize*len(batches))
+        st = time.time()
+        for i in range(num_trials):
+            print "Trial {0}\n".format(i)
+            #NOTE THAT OUTPUT IS A DEVICE ARRAY
+            #print output
+            #TAKE OUT SERIAL LINE WHEN TIMING
+            s_output = batch_serial(ser_image, window, ser_kernels, ser_biases, ser_max_sizes, pad, stride, batches)
+            #comp_results(output, s_output)
+            #print "Time so far {0:.4e} seconds".format(time.time()-st)
+        tot = time.time()-st
+        print "Serial Total time: {0:.4e} seconds".format(tot)
+        print "Serial Time per pixel {0:.4e} seconds".format(tot/(npixels*num_trials))
+        print "Serial Pixels per second {0:.4e}".format(npixels*num_trials/tot)
+    """ 
 
 def comp_results(output, s_output):
     for batch in range(len(output)):
@@ -143,9 +271,10 @@ def batch_serial(image, window, kernels, biases, max_sizes, pad, stride, batches
         for pixel in batch:
             batch_out.append(serial(image, window, kernels, biases, max_sizes, pad, stride, pixel))
         output.append(batch_out)
+        print "batch"
     return output
 
-def serial(image, window, kernels, biases, max_sizes, pad, stride, pixel):
+def comp_serial(image, window, kernels, biases, max_sizes, pad, stride, pixel):
     conv = comp_convolution(image[:, pixel[0]:pixel[0]+window[0], pixel[1]:pixel[1]+window[1]], kernels[0], biases[0], pad, stride)
     conv_max = maxout(conv, max_sizes[0])
     conv = comp_convolution(conv_max, kernels[1], biases[1], pad, stride)
@@ -221,19 +350,9 @@ def compute_sgemm_batched(cols, kernels, biases, handle, m, k, n):
     #takes gpu arrays of pointers to pointers
     alpha = np.float32(1.0); beta = np.float32(1.0);
     flop = 2*m*n*k*batchsize
-    #start = cu.Event()
-    #end = cu.Event()
-    #start.record()
     cublas.cublasSgemmBatched(handle, 'n', 'n', n, m, k, alpha, cols.ptr, n, kernels.ptr, k, beta, biases.ptr, n, batchsize);
-    #end.record()
 
-    #end.synchronize()
-    #time = end.time_since(start)/1000
-    
-    #print "sgemm_batched took:\n\t{0:.4e} seconds\n\t{1:.4e} gflop\n\t{2:.4e} gflops".format(time, flop/10**9, flop/(10**9*time))
-
-
-def compute_sgemm(col, kernel, bias, stream, handle):
+def compute_sgemm(col, kernel, bias, handle):
     alpha = np.float32(1.0); beta = np.float32(1.0);
 
     #(mxk)x(kxn)
@@ -245,24 +364,14 @@ def compute_sgemm(col, kernel, bias, stream, handle):
     #lower bound ignoring alpha and beta multiplications
     flop = 2*m*n*k
 
-    cublas.cublasSetStream(handle, stream.handle)
-    #start = cu.Event()
-    #end = cu.Event()
-    #start.record()
     cublas.cublasSgemm(handle, 'n', 'n', n, m, k, alpha, col.ptr, n, kernel.ptr, k, beta, bias.ptr, n);
-    #end.record()
-
-    #end.synchronize()
-    #time = end.time_since(start)/1000
-    
-    #print "sgemm took:\n\t{0:.4e} seconds\n\t{1:.4e} flop\n\t{2:.4e} flops".format(time, flop, flop/time)
 
 def compute_dims(image, kernels, biases, max_sizes, batchsize, window_sizes, pad, stride):
     image_dims = []; col_dims = []; kernel_dims = []; bias_dims = []; sgemm_dims = []; out_dims = [];
     ksizes = []; kchannels_s = [];
     height_col = 0; width_col = 0; ksize = 0; kchannels = 0; m = 0; k = 0; n = 0; out_height = 0; out_width = 0; out_channels = 0;
     for layer_n, (bias, kernel, max_size) in enumerate(zip(biases, kernels, max_sizes)):
-        bias = bias.reshape(1, bias.shape[2], bias.shape[0]*bias.shape[1])
+        bias = bias.reshape((1, bias.shape[2], bias.shape[0]*bias.shape[1]))
         bias_dims.append([bias.shape[1], bias.shape[2]])
         
         ksize = kernel.shape[0]; kchannels = kernel.shape[3];
@@ -281,8 +390,6 @@ def compute_dims(image, kernels, biases, max_sizes, batchsize, window_sizes, pad
 
         m = kchannels; k = ksize*ksize*channels; n = height_col*width_col;
         sgemm_dims.append([m, k, n])
-        #assert(bias_dims[layer_n][0] == m)
-        #assert(bias_dims[layer_n][1] == n)
 
         kernel_dims.append([kchannels, ksize*ksize*channels])
 
@@ -292,13 +399,40 @@ def compute_dims(image, kernels, biases, max_sizes, batchsize, window_sizes, pad
         out_dims.append([out_height, out_width, out_channels])
     return image_dims, col_dims, kernel_dims, bias_dims, sgemm_dims, out_dims, ksizes, kchannels_s
 
+def pylearn2_computation(model, image, window, batchsize, layers, pixels):
+    windowsize = window[0]*window[1]
+    nbatches = (len(pixels) + batchsize -1)/batchsize
+    model.set_batch_size(batchsize) 
+    data = model.get_input_space().make_batch_theano()
+    y0, y1, y2, y3 = model.fprop(data, return_all=True)
+    layer0 = theano.function([data], [y0])
+    layer1 = theano.function([data], [y1])
+    layer2 = theano.function([data], [y2])
+    layer3 = theano.function([data], [y3])
+    y = model.fprop(data)
+    classify = theano.function([data], [y], name = 'classify')
+    outputs = np.float32(np.zeros((nbatches*batchsize)))
+    all_layers = []
+    for batch in range(nbatches):
+        start = batch*batchsize
+        values = np.float32(np.zeros((1, window[0], window[1], batchsize)))
+        for pixn, pixel in zip(range(batchsize), pixels[start:start+batchsize]):
+            values[0, :, :, pixn] = image[pixel[0]:pixel[0]+window[0], pixel[1]:pixel[1]+window[1]]
+        all_layers.append(layer0(values))
+        all_layers.append(layer1(values))
+        all_layers.append(layer2(values))
+        all_layers.append(layer3(values))
+        return all_layers
+        outputs[start:start+batchsize] = classify(values)[0][:, 0] 
+        #outputs[start:start+batchsize, :] = values
+        #print outputs
 
-def preallocate():
-    return  
+    return outputs
 
-
-def gpu_computation(image, kernels, biases, max_sizes, batches, window_sizes, streams):
+def gpu_computation(image, kernels, biases, max_sizes, soft_weights, soft_bias, batches, window_sizes):
+    nbatches = len(batches)
     batchsize = len(batches[0])
+    npixels = nbatches*batchsize
     layers = len(kernels)
     handle = cublas.cublasCreate()
     results = []
@@ -343,6 +477,13 @@ def gpu_computation(image, kernels, biases, max_sizes, batches, window_sizes, st
         #space for output of maxpool
         output = gpu.empty((batchsize, out_dim[2], out_dim[0], out_dim[1]), np.float32)
         outputs.append(output)
+    #space for final output
+    classes = gpu.empty(npixels, np.float32)
+    soft_weights_d = gpu.to_gpu(soft_weights)
+    soft_bias = soft_bias.reshape(1, soft_bias.shape[0])
+    soft_bias_d = gpu.to_gpu(np.ascontiguousarray(np.reshape(np.tile(soft_bias, (batchsize, 1)), (2, batchsize))))
+    soft_bias_scratch = gpu.empty((soft_bias_d.shape[0], soft_bias_d.shape[1]), np.float32)
+
     col_ps_d = gpu.to_gpu(np.array(col_ps))
 
     kernel_ps = map(lambda x: [x.ptr]*batchsize, kernels_d)
@@ -359,7 +500,7 @@ def gpu_computation(image, kernels, biases, max_sizes, batches, window_sizes, st
         result = gpu.empty((out_dims[layers-1][2], out_dims[layers-1][0], out_dims[layers-1][1]), np.float32)
         b_result.append(result)
 
-    for batch, offsets_d, result in zip(batches, b_offsets_d, b_result):
+    for batchn, (batch, offsets_d, result) in enumerate(zip(batches, b_offsets_d, b_result)):
 
         image_d = full_image_d
         for layer_n, (im_dim, col_dim, kdim, bias_dim, sgemm_dim, out_dim, ksize, kchannels, max_size) in enumerate(zip(image_dims, col_dims, kernel_dims, bias_dims, sgemm_dims, out_dims, ksizes, kchannels_s, max_sizes)):
@@ -373,12 +514,29 @@ def gpu_computation(image, kernels, biases, max_sizes, batches, window_sizes, st
             sgemm_bias = sgemm_bias.reshape(np.int32(batchsize), np.int32(kchannels), col_dim[0], col_dim[1])
             maxpool_gpu.compute_max_batched(sgemm_bias, outputs[layer_n], np.int32(max_size))
             image_d = outputs[layer_n]
-            
-        result = outputs[layers-1].copy()
+        result = outputs[layers-1]
+        result = result.reshape(result.shape[0], result.shape[1]*result.shape[2]*result.shape[3]) 
+        cu.memcpy_dtod(soft_bias_scratch.ptr, soft_bias_d.ptr, soft_bias_d.size*4)
+        compute_sgemm(soft_weights_d, result, soft_bias_scratch, handle)
+        
+        offset = batchn*batchsize
+        soft_max_in = soft_bias_scratch
+        soft_max.compute_soft_max(soft_max_in, classes, offset)
         result_ps.append(result)
         
     cublas.cublasDestroy(handle)
-    return result_ps
+    return classes
 
 if __name__ == "__main__":
-    main()
+    #main()
+    #sys.exit()
+    
+    if len(sys.argv) != 4:
+        print "Usage: python main.py <image_folder> <output_folder> <model_file>"
+        sys.exit()
+    image_path = sys.argv[1]
+    output_path = sys.argv[2]
+    model_file_name = sys.argv[3]
+    images = sorted(glob.glob(image_path + "/*"))[0:2]
+    output_names = [output_path.rstrip("/") + "/" + image_name.split("/")[-1].rstrip(".tif") + "_classified.tif" for image_name in images]
+    classify(images, model_file_name, output_names)

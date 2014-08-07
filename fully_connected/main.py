@@ -42,10 +42,10 @@ def normalize_image_float(original_image, saturation_level=0.005):
 def load_image(image_name):
     image = np.float32(mahotas.imread(image_name))
     image = normalize_image_float(image)
-    #image /= 255
     return image
 
 def save_image(image, out_name):
+    #assumes image is normalized float from 0 to 1
     mahotas.imsave(out_name, np.int8(image*255))
 
 def classify_image(image, model, handle):
@@ -64,6 +64,14 @@ def classify_image(image, model, handle):
     return output
 
 def classify(image_names, model_file_name, output_names):
+    """Classify a set of images using the given model.
+    
+    Arguments:
+    image_names -- an iterable of strings with the names of the input images
+    model_file_name -- string
+    output_names -- an iterable of strings with the names of the output images
+    image_names and output_names should have the same length and indices match. i.e. image_names[idx] -> output_names[idx]
+    """
     handle = cublas.cublasCreate()
     model = serial.load(model_file_name)
     outputs = []
@@ -80,18 +88,15 @@ def main():
     layers = model.layers
     
     patch_dims = (39, 39)
-    #batch_rows_l = [2**x for x in range(4, 6)]
-    #print batch_rows_l
-    batch_rows_l = [12, 14]
-    print batch_rows_l
+    #There is a bug that occurs if running with too long a batch_rows_l
+    #Most likely a memory allocation issue that is not being reported correctly
+    batch_rows_l = [16] 
     batchsizes = map(lambda x: x*(1024-39+1), batch_rows_l)
     pixels = [(x, y) for x in range(1024-39+1) for y in range(1024-39+1)]
     
-    #pixels = [(x,y) for x in range(128) for y in range(128)]
+    #Uncomment to use pylearn2 to classify to check result
     #p_output = pylearn2_computation(model, image, patch_dims, batchsizes[0], layers, pixels)
     #p_output = np.transpose(p_output)
-    #save_image(np.int8(np.round(p_output[0].reshape(128, 128))), "test_pylearn2.tif")
-    #s_output = serial_computation(image, patch_dims, batchsize, layers, pixels)
     num_trials = 3
     for batchsize, batch_rows in zip(batchsizes, batch_rows_l):
         st = time.time()
@@ -109,14 +114,11 @@ def main():
     tot_sgemm_time = sum(sgemm_times)
     print "Total sgemm time: {0:.4e} seconds\nTotal gflop: {1:.4e}\nGflops: {2:.4e}".format(tot_sgemm_time, sgemm_gflop, sgemm_gflop/tot_sgemm_time)
 
+    #Uncomment to compare results of gpu and pylearn2 classifications 
     #output = output.reshape(1024-39, 1024-39)
-    #save_image(np.int8(np.round(output)), "test_out.tif")
     #print output, p_output
-    #print output.shape, s_output.shape, p_output.shape
     
-    #print np.allclose(s_output[0], output, rtol=1e-03, atol=1e-06)
     #print np.allclose(p_output[0], output, rtol=1e-04, atol=1e-07)
-    #print np.allclose(p_output, s_output, rtol=1e-04, atol=1e-06)
     cublas.cublasDestroy(handle)
     
     return 
@@ -159,38 +161,6 @@ def pylearn2_computation(model, image, patch_dims, batchsize, layers, pixels):
             values = output[0]
         outputs[start:start+batchsize, :] = values
     return outputs
-
-
-def serial_computation(image, patch_dims, batchsize, layers, pixels):
-    patchsize = patch_dims[0]*patch_dims[1]
-    weights_l = []; biases_l = []; results = []; 
-    values = np.float32(np.zeros((patchsize, batchsize)))
-    for pixn, pixel in zip(range(batchsize), pixels):
-        values[:, pixn] = image[pixel[0]:pixel[0]+patch_dims[0], pixel[1]:pixel[1]+patch_dims[1]].ravel()
-    for layer in layers:
-        weights_l.append(np.transpose(layer.get_weights()))
-        biases = layer.b.get_value()
-        biases_l.append(biases)
-        result = np.float32(np.zeros((biases.shape[0], batchsize)))
-        results.append(result)
-
-    for layer_n, (weights, biases, result) in enumerate(zip(weights_l, biases_l, results)): 
-        result = np.float32(np.zeros((biases.shape[0], batchsize)))
-        for pixn in range(batchsize):
-            result[:, pixn] = np.dot(weights, values[:, pixn]) + biases
-        values = ser_rect(result)
-            
-    return result
-
-def ser_rect(in_array):
-    for x in np.nditer(in_array, op_flags=['readwrite']):
-        if x < 0:
-            x[...] = 0
-    """for i in range(in_array.shape[0]):
-        for j in range(in_array.shape[1]):
-            if (in_array[i, j] < 0):
-                in_array[i, j] = 0"""
-    return in_array  
 
 def gpu_computation(image, patch_dims, batchsize, batch_rows, layers, pixels, handle):
     image_d = gpu.to_gpu(image)
@@ -240,8 +210,8 @@ def gpu_computation(image, patch_dims, batchsize, batch_rows, layers, pixels, ha
     return classes 
 
 if __name__ == "__main__":
-    main()
-    sys.exit()
+    #main()
+    #sys.exit()
 
     if len(sys.argv) != 4:
         print "Usage: python main.py <image_folder> <output_folder> <model_file>"
@@ -250,7 +220,7 @@ if __name__ == "__main__":
     output_path = sys.argv[2]
     #output_path = "/home/dmmiron/cuda/fast_gpu_net/fully_connected/"
     model_file_name = sys.argv[3]
-    images = sorted(glob.glob(image_path + "/*"))[0:10]
+    images = sorted(glob.glob(image_path + "/*"))[0:2]
     output_names = [output_path.rstrip("/") + "/" + image_name.split("/")[-1].rstrip(".tif") + "_classified.tif" for image_name in images]
     classify(images, model_file_name, output_names)
 
