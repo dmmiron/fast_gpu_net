@@ -55,12 +55,10 @@ def classify_image(image, model, kernels, biases, max_sizes, soft_weights, soft_
     for i in range(len(pixels)/batchsize):
         start = i*batchsize
         batches.append(pixels[start:start+batchsize])
-    
-    p_output = pylearn2_computation(model, image, window, batchsize, pixels)
-    #print "before soft_max layer"
-    #print p_layer3, "mark3"
-    p_layer4 = p_output[3][0]
-    #print p_layer4, "mark4"
+    #batches = batches[0:1]    
+    #p_output = pylearn2_computation(model, image, window, batchsize, pixels)
+    #p_output = p_output.reshape(valid_x, valid_y)
+    #save_image(np.int8(np.round(255*p_output)), "pylearn2_output.tif")
     
     output = gpu_computation(image, kernels, biases, max_sizes, soft_weights, soft_bias, batches, window)
     output = output.get()
@@ -87,7 +85,7 @@ def classify(image_names, model_file_name, output_names):
     kernels = map(lambda layer: np.array(layer[0].eval()), convs)
 
     #This can be simplified
-    kernels = map(lambda kernel: np.ascontiguousarray(np.rollaxis(kernel, 0, 3)[::1, ::1, :, :]), kernels)
+    kernels = map(lambda kernel: np.ascontiguousarray(np.rollaxis(kernel, 0, 3)), kernels)
     kdims = map(lambda kernel: kernel.shape, kernels)
     kernels = map(lambda layer: layer[0].dimshuffle(3, 0, 1, 2).eval(), convs)
     kernels = map(lambda kernel, kdim: kernel.reshape(kdim), kernels, kdims)
@@ -98,16 +96,21 @@ def classify(image_names, model_file_name, output_names):
     max_sizes = map(lambda layer: layer.pool_shape + [layer.num_pieces], layers[:-1])
     
     print kdims
-    soft_weights = softmax.get_params()[1].reshape((2, 3, 3, 32)).dimshuffle(0, 3, 1, 2).eval()
-    soft_weights = np.ascontiguousarray(np.reshape(soft_weights, (288, 2)))
-    soft_bias = softmax.get_params()[0].get_value()
+    weights = softmax.get_params()[1]; bias = softmax.get_params()[0];
+    #print weights.get_value(), "weights"
+    #print bias.get_value(), "bias"
+    
+    soft_weights = softmax.get_params()[1].reshape((3, 3, 32, 2)).dimshuffle(3, 2, 0, 1).eval()
+    soft_weights = np.ascontiguousarray(np.reshape(soft_weights, (2, 288)).transpose())
+    print soft_weights, "reshaped"
+    soft_bias = softmax.get_params()[0].get_value()[::1]
 
     window = layers[0].input_space.shape
     outputs = []
     for image_name, output_name in zip(image_names, output_names):
         image = load_image(image_name)
         output = classify_image(image, model, kernels, biases, max_sizes, soft_weights, soft_bias, window, handle)
-        save_image(np.int32(np.round(output*255)), output_name)
+        save_image(np.int8(np.round(output*255)), output_name)
     cublas.cublasDestroy(handle)
 
 def main():
@@ -357,11 +360,14 @@ def pylearn2_computation(model, image, window, batchsize, pixels):
     nbatches = (len(pixels) + batchsize -1)/batchsize
     model.set_batch_size(batchsize) 
     data = model.get_input_space().make_batch_theano()
+    
     y0, y1, y2, y3 = model.fprop(data, return_all=True)
     layer0 = theano.function([data], [y0])
     layer1 = theano.function([data], [y1])
     layer2 = theano.function([data], [y2])
     layer3 = theano.function([data], [y3])
+    #layer3_dp = theano.function([data], [y3.dot_product_result]) 
+    #print layer3_dp
     y = model.fprop(data)
     classify = theano.function([data], [y], name = 'classify')
     outputs = np.float32(np.zeros((nbatches*batchsize)))
@@ -371,11 +377,17 @@ def pylearn2_computation(model, image, window, batchsize, pixels):
         values = np.float32(np.zeros((1, window[0], window[1], batchsize)))
         for pixn, pixel in zip(range(batchsize), pixels[start:start+batchsize]):
             values[0, :, :, pixn] = image[pixel[0]:pixel[0]+window[0], pixel[1]:pixel[1]+window[1]]
+        dp_output = layer3(values)[0]
+        values = layer2(values)[0]
+        print np.sum(np.array(values).ravel()), "dot product input"
+        return dp_output
+        """
         all_layers.append(layer0(values))
         all_layers.append(layer1(values))
         all_layers.append(layer2(values))
         all_layers.append(layer3(values))
         return all_layers
+        """
         outputs[start:start+batchsize] = classify(values)[0][:, 0] 
         #outputs[start:start+batchsize, :] = values
         #print outputs
@@ -472,6 +484,8 @@ def gpu_computation(image, kernels, biases, max_sizes, soft_weights, soft_bias, 
         result = result.reshape(result.shape[0], result.shape[1]*result.shape[2]*result.shape[3]) 
         #4 for size of float
         cu.memcpy_dtod(soft_bias_scratch.ptr, soft_bias_d.ptr, soft_bias_d.size*4)
+        np_soft_weights = soft_weights_d.get()
+        np_result = result.get()
         compute_sgemm(soft_weights_d, result, soft_bias_scratch, handle)
         
         offset = batchn*batchsize
@@ -492,6 +506,6 @@ if __name__ == "__main__":
     image_path = sys.argv[1]
     output_path = sys.argv[2]
     model_file_name = sys.argv[3]
-    images = sorted(glob.glob(image_path + "/*"))[0:2]
+    images = sorted(glob.glob(image_path + "/*"))[0:1]
     output_names = [output_path.rstrip("/") + "/" + image_name.split("/")[-1].rstrip(".tif") + "_classified.tif" for image_name in images]
     classify(images, model_file_name, output_names)

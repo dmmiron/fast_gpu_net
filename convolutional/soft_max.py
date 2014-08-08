@@ -21,6 +21,18 @@ __global__ void soft_max_gpu(const float *input, int pixels, int out_offset, flo
         output[idx] = num/den;
     }
 }
+
+__global__ void soft_max_gpu_test(const float *input, int pixels, int out_offset, float *output) {
+    float max;
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    output += out_offset;
+    if (idx < pixels) {
+       max = input[2*idx] > input[2*idx+1] ? input[2*idx] : input[2*idx+1];
+       float num = expf(input[2*idx] - max);
+       float den = num + expf(input[2*idx+1]-max);
+       output[idx] = num/den;
+    }
+}
 """
 
 def get_gpu_func(module, func_name):
@@ -36,7 +48,8 @@ def compute_soft_max(in_array, output, offset=0):
 
 def init():
     global soft_max
-    soft_max = get_gpu_func(soft_max_kernel, "soft_max_gpu")
+    soft_max = get_gpu_func(soft_max_kernel, "soft_max_gpu_test")
+    #soft_max = get_gpu_func(soft_max_kernel, "soft_max_gpu")
 
 def test_soft_max():
     in_array = np.float32(np.random.rand(2, 10))
