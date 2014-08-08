@@ -8,17 +8,16 @@ import pycuda.autoinit
 
 global soft_max
 
+#NOTE THAT THE MEMORY LAYOUT IS DIFFERENT FROM THE FULLY CONNECTED SOFT_MAX
+
 soft_max_kernel = """
 #include <stdio.h>
 __global__ void soft_max_gpu(const float *input, int pixels, int out_offset, float *output) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     output += out_offset;
     if (idx < pixels) {
-        float num = __expf(input[2*idx]);
-        float den = num + __expf(input[2*idx+1]);
-        if (idx == 0)
-            printf("%f num, %f den, %f num_input, %f den_input\\n", num, den, input[2*idx], input[2*idx+1]);
-        //printf("%d idx, %f val\\n", idx, num/den);
+        float num = expf(input[2*idx]);
+        float den = num + expf(input[2*idx+1]);
         output[idx] = num/den;
     }
 }

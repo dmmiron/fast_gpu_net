@@ -46,7 +46,7 @@ def load_image(image_name):
 
 def save_image(image, out_name):
     #assumes image is normalized float from 0 to 1
-    mahotas.imsave(out_name, np.int8(image*255))
+    mahotas.imsave(out_name, np.int8(image))
 
 def classify_image(image, model, handle):
     st = time.time()
@@ -78,7 +78,7 @@ def classify(image_names, model_file_name, output_names):
     for image_name, output_name in zip(image_names, output_names):
         image = load_image(image_name)
         output = classify_image(image, model, handle)
-        save_image(np.int32(np.round(output)), output_name)
+        save_image(np.int32(np.round(output*255)), output_name)
     cublas.cublasDestroy(handle)
 
 def main():
@@ -90,14 +90,14 @@ def main():
     patch_dims = (39, 39)
     #There is a bug that occurs if running with too long a batch_rows_l
     #Most likely a memory allocation issue that is not being reported correctly
-    batch_rows_l = [16] 
+    batch_rows_l = [8] 
     batchsizes = map(lambda x: x*(1024-39+1), batch_rows_l)
     pixels = [(x, y) for x in range(1024-39+1) for y in range(1024-39+1)]
     
     #Uncomment to use pylearn2 to classify to check result
-    #p_output = pylearn2_computation(model, image, patch_dims, batchsizes[0], layers, pixels)
-    #p_output = np.transpose(p_output)
-    num_trials = 3
+    p_output = pylearn2_computation(model, image, patch_dims, batchsizes[0], layers, pixels)
+    p_output = np.transpose(p_output)
+    num_trials = 1
     for batchsize, batch_rows in zip(batchsizes, batch_rows_l):
         st = time.time()
         for trial in range(num_trials):
@@ -116,9 +116,9 @@ def main():
 
     #Uncomment to compare results of gpu and pylearn2 classifications 
     #output = output.reshape(1024-39, 1024-39)
-    #print output, p_output
+    print output, p_output
     
-    #print np.allclose(p_output[0], output, rtol=1e-04, atol=1e-07)
+    print np.allclose(p_output[0], output, rtol=1e-04, atol=1e-07)
     cublas.cublasDestroy(handle)
     
     return 
@@ -147,7 +147,7 @@ def pylearn2_computation(model, image, patch_dims, batchsize, layers, pixels):
     nbatches = (len(pixels) + batchsize -1)/batchsize
     model.set_batch_size(batchsize) 
     data = model.get_input_space().make_batch_theano()
-    outputs = np.float32(np.zeros((len(pixels), 2)))
+    outputs = np.float32(np.zeros((nbatches*batchsize, 2)))
     for batch in range(nbatches):
         start = batch*batchsize
         values = np.float32(np.zeros((batchsize, patchsize)))
@@ -159,8 +159,9 @@ def pylearn2_computation(model, image, patch_dims, batchsize, layers, pixels):
             classify = theano.function([data], [y], name='classify')
             output = np.array(classify(values))
             values = output[0]
+        #print start, batchsize
         outputs[start:start+batchsize, :] = values
-    return outputs
+    return outputs[:len(pixels), :]
 
 def gpu_computation(image, patch_dims, batchsize, batch_rows, layers, pixels, handle):
     image_d = gpu.to_gpu(image)
