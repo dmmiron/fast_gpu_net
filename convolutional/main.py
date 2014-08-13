@@ -472,8 +472,7 @@ def gpu_computation(image, kernels, biases, max_sizes, soft_weights, soft_bias, 
         for layer_n, (im_dim, col_dim, kdim, bias_dim, sgemm_dim, out_dim, ksize, kchannels, max_size) in enumerate(zip(image_dims, col_dims, kernel_dims, bias_dims, sgemm_dims, out_dims, ksizes, kchannels_s, max_sizes)):
 
             sgemm_bias = sgemm_biases[layer_n]
-            #4 for size of float
-            cu.memcpy_dtod(sgemm_bias.ptr, biases_d[layer_n].ptr, sgemm_bias.size*4)
+            cu.memcpy_dtod(sgemm_bias.ptr, biases_d[layer_n].ptr, sgemm_bias.nbytes)
 
             im2col_gpu.compute_im2col_batched(image_d, im_dim[0], im_dim[1], im_dim[2], np.int32(ksize), np.int32(pad), np.int32(stride), offsets_d, layer_n, batchsize, cols[layer_n])
             compute_sgemm_batched(col_ps_d[layer_n], kernel_ps_d[layer_n], sgemm_biases_ps_d[layer_n], handle, sgemm_dim[0], sgemm_dim[1], sgemm_dim[2])
@@ -482,8 +481,7 @@ def gpu_computation(image, kernels, biases, max_sizes, soft_weights, soft_bias, 
             image_d = outputs[layer_n]
         result = outputs[layers-1]
         result = result.reshape(result.shape[0], result.shape[1]*result.shape[2]*result.shape[3]) 
-        #4 for size of float
-        cu.memcpy_dtod(soft_bias_scratch.ptr, soft_bias_d.ptr, soft_bias_d.size*4)
+        cu.memcpy_dtod(soft_bias_scratch.ptr, soft_bias_d.ptr, soft_bias_d.nbytes)
         np_soft_weights = soft_weights_d.get()
         np_result = result.get()
         compute_sgemm(soft_weights_d, result, soft_bias_scratch, handle)

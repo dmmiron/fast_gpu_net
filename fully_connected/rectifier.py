@@ -19,11 +19,18 @@ __global__ void rectifier_gpu(float *input, int n) {
 }
 """
 
-
 def get_gpu_func(module, func_name):
     return nvcc.SourceModule(module).get_function(func_name)
 
 def compute_rectify(in_array):
+    """
+    Computes elementwise rectified linear operation on an array in place
+    
+    Parameters
+    ----------
+    in_array : pycuda gpuarray
+         Note that the array is modified, rather than returning a new array.
+    """
     threads = 128;
     num_kernels = in_array.size
     blocksize = (threads, 1, 1)
@@ -32,6 +39,7 @@ def compute_rectify(in_array):
     rectify(in_array, np.int32(num_kernels), block=blocksize, grid=gridsize) 
 
 def init():
+    """compiles the kernel"""
     global rectify
     rectify = get_gpu_func(rectifier_kernel, "rectifier_gpu") 
 
@@ -44,7 +52,7 @@ def test_rectify():
     print image-image_d.get()
    
 
-
+#for testing
 if __name__ == "__main__":
     init()
     test_rectify()

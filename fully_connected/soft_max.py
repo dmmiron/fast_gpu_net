@@ -25,6 +25,18 @@ def get_gpu_func(module, func_name):
     return nvcc.SourceModule(module).get_function(func_name)
 
 def compute_soft_max(in_array, output, offset=0):
+    """
+    Computes soft_max for an array of 2 element vectors
+
+    Parameters
+    ----------
+    in_array : pycuda gpuarray
+        should have shape on gpu [2, n]
+    output : pycuda gpuarray
+        1d array with length >= n
+    offset : int
+        offset value to set start location for writing output
+    """
     threads = 128;
     num_kernels = in_array.shape[1]
     blocksize = (threads, 1, 1)
@@ -33,6 +45,7 @@ def compute_soft_max(in_array, output, offset=0):
     return
 
 def init():
+    """Comiples kernel"""
     global soft_max
     soft_max = get_gpu_func(soft_max_kernel, "soft_max_gpu")
 
@@ -45,6 +58,7 @@ def test_soft_max():
     print in_array
     print output
 
+#for testing
 if __name__ == "__main__":
     init()
     test_soft_max()

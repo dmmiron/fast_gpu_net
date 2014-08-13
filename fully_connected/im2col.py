@@ -115,6 +115,7 @@ def compute_im2col(in_array, window_height, window_width, window_channels, ksize
     im2col(num_kernels, in_array, np.int32(height), np.int32(width), np.int32(ksize), np.int32(pad), np.int32(stride), height_col, width_col, np.int32(start_idx), output, block=blocksize, grid=gridsize)
 
 def init():
+    """Compiles functions"""
     global im2col
     global im2col_batched
     im2col = get_gpu_func(im2col_kernel, "im2col_gpu_kernel")
@@ -132,6 +133,7 @@ def test_batched():
     print A_d
     print result
 
+#for testing
 if __name__ == "__main__":
     test_batched()
     
