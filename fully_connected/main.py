@@ -277,7 +277,7 @@ if __name__ == "__main__":
     output_path = sys.argv[2]
     #output_path = "/home/dmmiron/cuda/fast_gpu_net/fully_connected/"
     model_file_name = sys.argv[3]
-    images = sorted(glob.glob(image_path + "/*"))[0:2]
+    images = sorted(glob.glob(image_path + "/*"))
     output_names = [output_path.rstrip("/") + "/" + image_name.split("/")[-1].rstrip(".tif") + "_classified.tif" for image_name in images]
     classify(images, model_file_name, output_names)
 
