@@ -62,11 +62,12 @@ def classify_image(image, model, handle):
     valid_x = image.shape[0]-patch_dims[0] + 1
     valid_y = image.shape[1]-patch_dims[1] + 1
 
-    #How many rows to classify at a time
-    #NOTE: This should be change to depend on the size of the rows
-    batch_rows = 16 
 
+    #We set a max batchsize to prevent running out of memory, but actual batches are done by row
+    max_batchsize = 2**14 #16 times 1024 
+    batch_rows = = max_batchsize/valid_x 
     batchsize = valid_x*batch_rows
+
     #get the indices for classification. Note that these correspond to the upper left corner of the patch, not to the pixel being classified
     pixels = [(x,y) for x in range(valid_x) for y in range(valid_y)]
     output = gpu_computation(image, patch_dims, batchsize, batch_rows, layers, pixels, handle)
