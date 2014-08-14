@@ -65,7 +65,7 @@ def classify_image(image, model, handle):
 
     #We set a max batchsize to prevent running out of memory, but actual batches are done by row
     max_batchsize = 2**14 #16 times 1024 
-    batch_rows = = max_batchsize/valid_x 
+    batch_rows = max_batchsize/valid_x 
     batchsize = valid_x*batch_rows
 
     #get the indices for classification. Note that these correspond to the upper left corner of the patch, not to the pixel being classified
