@@ -48,6 +48,7 @@ def load_image(image_name):
 
 def save_image(image, out_name):
     #assumes image is normalized float from 0 to 1
+    print "saved image: {0}".format(out_name)
     mahotas.imsave(out_name, np.int8(image))
 
 def classify_image(image, model, handle):
@@ -117,7 +118,7 @@ def main():
     pixels = [(x, y) for x in range(1024-39+1) for y in range(1024-39+1)]
     
     #Uncomment to use pylearn2 to classify to check result
-    p_output = pylearn2_computation(model, image, patch_dims, batchsizes[0], layers, pixels)
+    p_output = pylearn2_computation(model, image, patch_dims, batchsizes[0], pixels)
     p_output = np.transpose(p_output)
     num_trials = 1
     for batchsize, batch_rows in zip(batchsizes, batch_rows_l):
@@ -170,7 +171,7 @@ def compute_sgemm(weights, values, biases, handle, m, k, n):
     sgemm_gflop += gflop
     """
 
-def pylearn2_computation(model, image, patch_dims, batchsize, layers, pixels):
+def pylearn2_computation(model, image, patch_dims, batchsize, pixels):
     """ Classify an image using pylearn2. For testing to compare result of pylearn2 with result of cuda code """
     patchsize = patch_dims[0]*patch_dims[1]
     nbatches = (len(pixels) + batchsize -1)/batchsize
@@ -221,8 +222,9 @@ def gpu_computation(image, patch_dims, batchsize, batch_rows, layers, pixels, ha
     weights_l = []; biases_l = []; outputs_l = [];
     for layer in layers:
         weights = layer.get_weights(); biases = np.float32(layer.b.get_value());
+        #note that we have to transpose the weights array to match the row major format of the images
         weights = np.ascontiguousarray(np.transpose(weights))
-        #to prevent tiling from prepending the dimension
+        #we reshape (just add a dimension) first to prevent tiling from prepending the dimension
         biases = biases.reshape([len(biases), 1])
         batch_biases = np.tile(biases, (1, batchsize))
 

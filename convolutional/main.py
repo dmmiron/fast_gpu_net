@@ -42,8 +42,12 @@ def load_image(image_name):
 def save_image(image, out_name):
     #assumes image is normalized float from 0 to 1
     mahotas.imsave(out_name, np.int8(image))
+    print "saved image: {0}".format(out_name)
 
 def classify_image(image, model, kernels, biases, max_sizes, soft_weights, soft_bias, window, handle):
+    """Classify a single image based on a given model. Only the valid pixels are classified, which means the output 
+    will be smaller than the input."""
+
     st = time.time()
     valid_x = image.shape[0]-window[0] + 1
     valid_y = image.shape[1]-window[1] + 1
@@ -68,13 +72,23 @@ def classify_image(image, model, kernels, biases, max_sizes, soft_weights, soft_
     return output
 
 def classify(image_names, model_file_name, output_names):
-    """Classify a set of images using the given model.
+    """
+    Classify a set of images using the given model.
     
-    Arguments:
-    image_names -- an iterable of strings with the names of the input images
-    model_file_name -- string
-    output_names -- an iterable of strings with the names of the output images
+    Parameters
+    ----------
+    image_names : iterable of strings
+        names of the input images
+    model_file_name : string
+        name of the file containing the model
+    output_names : iterable of strings
+        names of the output images
+    
+    Notes
+    -----
     image_names and output_names should have the same length and indices match. i.e. image_names[idx] -> output_names[idx]
+    This network copies the weights to the gpu once to classify all the images as it should. This can be used as a model 
+    to make the same change to the fully connected network.
     """
     handle = cublas.cublasCreate()
     model = serial.load(model_file_name)
@@ -95,14 +109,10 @@ def classify(image_names, model_file_name, output_names):
     bias_dims = map(lambda bias: bias.shape, biases)
     max_sizes = map(lambda layer: layer.pool_shape + [layer.num_pieces], layers[:-1])
     
-    print kdims
     weights = softmax.get_params()[1]; bias = softmax.get_params()[0];
-    #print weights.get_value(), "weights"
-    #print bias.get_value(), "bias"
     
     soft_weights = softmax.get_params()[1].reshape((3, 3, 32, 2)).dimshuffle(3, 2, 0, 1).eval()
     soft_weights = np.ascontiguousarray(np.reshape(soft_weights, (2, 288)).transpose())
-    print soft_weights, "reshaped"
     soft_bias = softmax.get_params()[0].get_value()[::1]
 
     window = layers[0].input_space.shape
@@ -114,6 +124,7 @@ def classify(image_names, model_file_name, output_names):
     cublas.cublasDestroy(handle)
 
 def main():
+    """for testing"""
     #compile gpu kernels
     maxpool_gpu.init()
     im2col_gpu.init()
@@ -161,7 +172,6 @@ def main():
     max_sizes = [max_0, max_1, max_2]
     ser_max_sizes = map(to_serial, max_sizes)
 
-     
 
     num_trials = 1
     valid_x = image.shape[0]-window[0]; valid_y = image.shape[1]-window[1];
